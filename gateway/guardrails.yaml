@@ -1,0 +1,44 @@
+# Applied with: tfy apply -f gateway/guardrails.yaml
+# Hooks: llm_input_guardrails, llm_output_guardrails,
+#        mcp_tool_pre_invoke_guardrails, mcp_tool_post_invoke_guardrails
+name: implant-guardrails
+type: gateway-guardrails-config
+rules:
+  - id: localize-guards
+    when:
+      target:
+        conditions:
+          mcpServers:
+            values: [localization-mcp]
+            condition: in
+    mcp_tool_pre_invoke_guardrails: [implant/coords-in-bbox-check]
+    mcp_tool_post_invoke_guardrails: [implant/landmark-sanity]
+
+  - id: synthesize-guards
+    when:
+      target:
+        conditions:
+          mcpServers:
+            values: [blender-mcp]
+            condition: in
+    mcp_tool_pre_invoke_guardrails: [implant/theta-bounds-check]
+    mcp_tool_post_invoke_guardrails: [implant/mesh-validity-check]
+
+  - id: evaluate-guards
+    when:
+      target:
+        conditions:
+          mcpServers:
+            values: [fea-mcp]
+            condition: in
+    mcp_tool_pre_invoke_guardrails: [implant/mesh-watertight-gate]
+    mcp_tool_post_invoke_guardrails: [implant/report-nan-gate]
+
+  - id: pii-input
+    when:
+      target:
+        conditions:
+          models:
+            values: [bedrock/claude-sonnet]
+            condition: in
+    llm_input_guardrails: [pii/pii-detection]

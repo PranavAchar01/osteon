@@ -1,0 +1,53 @@
+# Applied with: tfy apply -f gateway/routing.yaml
+# NOTE: field names follow TrueFoundry's documented config shape. Confirm exact keys
+# against your deployed gateway version before the first apply, then freeze.
+name: implant-routing
+type: gateway-load-balancing-config
+rules:
+  - id: localizer-route
+    when:
+      metadata:
+        stage: localize
+    load_balance_targets:
+      - target: bedrock/claude-sonnet
+        weight: 100
+        fallback: true
+      - target: bedrock/llama-70b
+        weight: 0
+        fallback: true
+    model_configs:
+      - target: bedrock/claude-sonnet
+        max_failures: 3
+        cooldown_seconds: 300
+
+  - id: proposer-route
+    when:
+      metadata:
+        stage: synthesize
+    load_balance_targets:
+      - target: bedrock/claude-sonnet
+        weight: 100
+        fallback: true
+      - target: bedrock/mistral-large
+        weight: 0
+        fallback: true
+    model_configs:
+      - target: bedrock/claude-sonnet
+        max_failures: 3
+        cooldown_seconds: 300
+
+  - id: evaluator-route
+    when:
+      metadata:
+        stage: evaluate
+    load_balance_targets:
+      - target: bedrock/claude-sonnet
+        weight: 100
+        fallback: true
+      - target: bedrock/llama-70b
+        weight: 0
+        fallback: true
+    model_configs:
+      - target: bedrock/claude-sonnet
+        max_failures: 3
+        cooldown_seconds: 300

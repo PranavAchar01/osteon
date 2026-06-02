@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+traces/
+.DS_Store
+
+# meshes & solver artifacts are not committed, except small fixtures
+*.stl
+*.inp
+!**/fixtures/*.stl

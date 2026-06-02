@@ -1,0 +1,20 @@
+# Applied with: tfy apply -f gateway/mcp-registry.yaml
+# One server per split, aggregator mode, exposing only that split's tools.
+# NOTE: confirm the exact registry schema against your deployed gateway version.
+name: implant-mcp-registry
+type: gateway-mcp-registry-config
+servers:
+  - name: localization-mcp
+    mode: aggregator
+    command: python split_a_localization/mcp_server.py
+    tools: [load_bone_mesh, measure_cortical_thickness, render_markers]
+
+  - name: blender-mcp
+    mode: aggregator
+    command: blender --background --python split_b_synthesis/mcp_server.py
+    tools: [generate_mesh, repair_mesh, check_contacts]
+
+  - name: fea-mcp
+    mode: aggregator
+    command: python split_c_evaluation/mcp_server.py
+    tools: [meshing_to_fe, run_calculix, compute_shielding_index]
