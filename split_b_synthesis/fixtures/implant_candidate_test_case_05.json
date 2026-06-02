@@ -1,0 +1,29 @@
+{
+  "case_id": "test_case_05",
+  "candidate_id": "cand-0",
+  "iteration": 0,
+  "parameter_vector": {
+    "length_mm": 200.0,
+    "width_mm": 14.0,
+    "thickness_mm": 8.0,
+    "n_screws": 4,
+    "screw_spacing_mm": 40.0,
+    "contour_offset_mm": 0.5
+  },
+  "mesh_path": "split_b_synthesis/fixtures/implant_candidate_test_case_05.stl",
+  "contacts_anchor_ids": [
+    "a0",
+    "a1",
+    "a2",
+    "a3"
+  ],
+  "volume_mm3": 21620.80974417675,
+  "min_thickness_mm": 8.0,
+  "validity": {
+    "watertight": true,
+    "manifold": true,
+    "self_intersect": false
+  },
+  "fallback_rung": 1,
+  "trace_id": "2ed8882b9bfa47f5bdf96157be355331"
+}
