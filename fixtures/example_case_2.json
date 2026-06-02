@@ -1,0 +1,5 @@
+{
+    "case_id": "test_case_02",
+    "bone_mesh_path": "fixtures/dummy_bone.stl",
+    "bone_material": {}, "defect": {}, "load_profile": [], "implant_material": {}, "constraints": {}
+}

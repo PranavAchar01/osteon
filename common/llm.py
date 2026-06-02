@@ -16,6 +16,9 @@ def call_llm(*, stage: str, messages, model: str = "bedrock/claude-sonnet", **kw
 
     stage is one of: localize, synthesize, evaluate.
     """
+    if 'trace' in kw:
+        trace = kw.pop('trace')
+        # TODO: emit a span with the trace object
     return client.chat.completions.create(
         model=model,
         messages=messages,

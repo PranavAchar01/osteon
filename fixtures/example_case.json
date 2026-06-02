@@ -1,16 +1,23 @@
 {
-  "case_id": "demo-tibia-001",
-  "bone_mesh_path": "fixtures/tibia.stl",
-  "bone_material": {"E_cortical_MPa": 17000, "E_trabecular_MPa": 1000, "density": 1.9},
-  "defect": {
-    "type": "fracture",
-    "region": "mid-shaft",
-    "severity": "moderate",
-    "description": "Transverse mid-shaft tibial fracture requiring plate fixation."
-  },
-  "load_profile": [
-    {"name": "gait_peak", "force_vector_N": {"x": 0, "y": 0, "z": -2400}, "application_region": "proximal", "cycles": 1000000}
-  ],
-  "implant_material": {"name": "Ti-6Al-4V", "E_MPa": 114000, "yield_MPa": 880, "endurance_limit_MPa": 500},
-  "constraints": {"min_thickness_mm": 3.0, "max_volume_mm3": 8000, "process": "additive"}
+    "case_id": "test_case_01",
+    "bone_mesh_path": "fixtures/dummy_bone.stl",
+    "bone_material": {
+        "E_cortical_MPa": 17000,
+        "E_trabecular_MPa": 1000,
+        "density": 1.9
+    },
+    "defect": {
+        "type": "fracture",
+        "region": "diaphysis",
+        "severity": "moderate",
+        "description": "A simple transverse fracture in the mid-diaphysis."
+    },
+    "load_profile": [],
+    "implant_material": {
+        "name": "Ti6Al4V",
+        "E_MPa": 110000,
+        "yield_MPa": 830,
+        "endurance_limit_MPa": 510
+    },
+    "constraints": {}
 }
