@@ -1,0 +1,14 @@
+{
+  "case_id": "demo-tibia-001",
+  "coordinate_frame": {"origin": {"x": 0, "y": 0, "z": 0}, "basis": [[1, 0, 0], [0, 1, 0], [0, 0, 1]]},
+  "anchor_points": [
+    {"id": "a0", "xyz": {"x": -8, "y": 0, "z": 40}, "normal": {"x": -1, "y": 0, "z": 0}, "cortical_thickness_mm": 4.2},
+    {"id": "a1", "xyz": {"x": -8, "y": 0, "z": -40}, "normal": {"x": -1, "y": 0, "z": 0}, "cortical_thickness_mm": 3.9}
+  ],
+  "resection_planes": [],
+  "defect_region": {"centroid": {"x": 0, "y": 0, "z": 0}, "obb": [], "volume_mm3": 320.0},
+  "fit_target_surface_path": "fixtures/fit_target.stl",
+  "confidence": 0.91,
+  "fallback_rung": 1,
+  "trace_id": "example"
+}

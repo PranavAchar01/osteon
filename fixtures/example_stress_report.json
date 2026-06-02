@@ -1,0 +1,16 @@
+{
+  "case_id": "demo-tibia-001",
+  "candidate_id": "cand-0",
+  "iteration": 0,
+  "peak_von_mises_MPa": 489.0,
+  "peak_location": {"x": 0, "y": 0, "z": 0},
+  "factor_of_safety": 1.8,
+  "fatigue_safe": true,
+  "stress_shielding_index": 0.74,
+  "displacement_max_mm": 0.42,
+  "passed": true,
+  "solver_used": "full_fea",
+  "confidence": 0.88,
+  "fallback_rung": 1,
+  "trace_id": "example"
+}

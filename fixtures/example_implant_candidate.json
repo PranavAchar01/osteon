@@ -1,0 +1,13 @@
+{
+  "case_id": "demo-tibia-001",
+  "candidate_id": "cand-0",
+  "iteration": 0,
+  "parameter_vector": {"length_mm": 96, "width_mm": 14, "thickness_mm": 4.0, "n_screws": 6, "contour_offset_mm": 0.5},
+  "mesh_path": "fixtures/cand-0.stl",
+  "contacts_anchor_ids": ["a0", "a1"],
+  "volume_mm3": 5120.0,
+  "min_thickness_mm": 4.0,
+  "validity": {"watertight": true, "manifold": true, "self_intersect": false},
+  "fallback_rung": 1,
+  "trace_id": "example"
+}
