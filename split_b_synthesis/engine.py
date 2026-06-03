@@ -1,32 +1,41 @@
-"""Split B engine - Synthesis & Iteration Controller (Day 1: real geometry + fixtures).
+"""Split B engine - Synthesis & Iteration Controller.
 
 Input (from the orchestrator): {"plan": PlacementPlan, "report": StressReport|None,
-"iteration": int}. Output: a pydantic-valid ImplantCandidate, with trace_id carried from
+"iteration": int}. Output: a pydantic-valid ImplantCandidate, trace_id carried from
 plan.trace_id. Mesh ops go through the blender-mcp tools (offline trimesh + pymeshlab).
 
-THETA is the PLATE parametrization (the stem variant is deferred). THETA_BOUNDS below is the
-single source of truth for the bounds guardrail and the (Day 2) CMA-ES search space.
+Fallback ladder (STANDARDIZATION §6), wired at the bottom as
+``with_fallback([_rung1, _rung2], _floor)``:
+  - rung 1: LLM theta-proposer via common.llm.call_llm(stage="synthesize"); bad output or
+    a model outage -> RetryableError/RejectedOutput so the ladder advances.
+  - rung 2: CMA-ES numeric optimizer (no LLM) over THETA_BOUNDS against a stress objective.
+  - floor: last-known-good theta + a stop flag; a guaranteed-watertight solid plate; never raises.
 
-Day 1 ships rung 1 (real geometry) + a real floor; Day 2 adds the LLM proposer, the CMA-ES
-rung 2, the mock stress oracle, and the controller loop that consumes `report`.
+THETA is the PLATE parametrization; THETA_BOUNDS is the single source of truth for the bounds
+guardrail and the CMA-ES search space. THETA_BOUNDS is intentionally STATIC: the frozen
+synthesize input is only {plan, report, iteration}, so CaseSpec.constraints never reach Split B.
 """
 
+import json
 import os
+import time
 from pathlib import Path
 
 import numpy as np
+import openai
 import trimesh
 
-from common.contracts import ImplantCandidate, PlacementPlan
-from common.errors import RetryableError, ToolFailError
+from common import llm
+from common.contracts import ImplantCandidate, PlacementPlan, StressReport, Vec3
+from common.errors import RejectedOutput, RetryableError, ToolFailError
 from common.ladder import with_fallback
 from common.settings import settings
-from split_b_synthesis.mcp_server import generate_mesh
+from common.trace import hash_payload
+from split_b_synthesis.mcp_server import check_contacts, generate_mesh
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# --- Task 1: theta schema + bounds -------------------------------------------------------
-# Plate parametrization; all millimetres except n_screws (an integer count).
+# --- theta schema + bounds (single source of truth) --------------------------------------
 THETA_BOUNDS = {
     "length_mm": (40.0, 200.0),
     "width_mm": (8.0, 30.0),
@@ -43,6 +52,21 @@ DEFAULT_THETA = {
     "screw_spacing_mm": 14.0,
     "contour_offset_mm": 0.5,
 }
+
+# Controller objective constants (no CaseSpec here -> nominal values).
+TARGET_FOS = 1.5
+SSI_BAND = (0.6, 0.9)
+_NOMINAL_LOAD_N = 700.0
+_STRESS_K = 550.0  # calibrated so a mid-range plate lands near the example report (~490 MPa)
+_DEFAULT_YIELD_MPA = 830.0
+_DEFAULT_ENDURANCE_MPA = 510.0
+
+# Tests inject a stress oracle (the C-simulator) here so rung 2 optimizes against it offline.
+# In live/standalone operation it stays None and rung 2 uses the built-in analytic proxy below.
+STRESS_ORACLE = None
+
+# Last-known-good theta per case_id, for the floor (STANDARDIZATION §6 rung-3).
+_LAST_GOOD: dict = {}
 
 
 def clamp_theta(theta: dict) -> dict:
@@ -72,6 +96,87 @@ def seed_theta(plan: PlacementPlan) -> dict:
     return clamp_theta(theta)
 
 
+# --- guardrails (mirror the gateway guardrails so they fire offline; STANDARDIZATION §9) --
+def theta_bounds_check(theta: dict) -> None:
+    """implant/theta-bounds-check (pre-invoke): reject out-of-range theta BEFORE generate_mesh."""
+    for key, (low, high) in THETA_BOUNDS.items():
+        value = theta.get(key)
+        if value is None or value < low or value > high:
+            raise RejectedOutput(f"theta-bounds-check: {key}={value} outside [{low}, {high}]")
+
+
+def mesh_validity_check(candidate: ImplantCandidate) -> None:
+    """implant/mesh-validity-check (post-invoke): reject invalid meshes before they reach C."""
+    v = candidate.validity
+    if not v.get("watertight") or not v.get("manifold") or v.get("self_intersect"):
+        raise RejectedOutput(f"mesh-validity-check: invalid mesh {v}")
+
+
+# --- stress objective + analytic proxy ----------------------------------------------------
+def _objective(report: StressReport, volume_mm3: float, max_volume=None) -> float:
+    """Scalarize a StressReport for CMA-ES: minimize peak von Mises with constraint penalties."""
+    obj = float(report.peak_von_mises_MPa)
+    if report.factor_of_safety < TARGET_FOS:
+        obj += 1000.0 * (TARGET_FOS - report.factor_of_safety)
+    low, high = SSI_BAND
+    ssi = report.stress_shielding_index
+    if ssi < low:
+        obj += 1000.0 * (low - ssi)
+    elif ssi > high:
+        obj += 1000.0 * (ssi - high)
+    if max_volume and volume_mm3 > max_volume:
+        obj += volume_mm3 - max_volume
+    return obj
+
+
+def _analytic_oracle(theta: dict) -> StressReport:
+    """rung-2 internal cost model: closed-form beam bending (SETUP §7), nominal load/material.
+
+    Used only when no external oracle is injected (tests inject the mock C-simulator instead).
+    """
+    thickness = theta["thickness_mm"]
+    width = theta["width_mm"]
+    peak = _STRESS_K * _NOMINAL_LOAD_N / (thickness * width**2)
+    fos = _DEFAULT_YIELD_MPA / peak
+    ssi = max(0.0, min(1.0, 1.0 - thickness / 16.0))
+    return StressReport(
+        case_id="",
+        candidate_id="analytic",
+        iteration=0,
+        peak_von_mises_MPa=peak,
+        peak_location=Vec3(x=0.0, y=0.0, z=0.0),
+        factor_of_safety=fos,
+        fatigue_safe=bool(peak < _DEFAULT_ENDURANCE_MPA),
+        stress_shielding_index=ssi,
+        displacement_max_mm=0.3,
+        passed=bool(fos >= TARGET_FOS and SSI_BAND[0] <= ssi <= SSI_BAND[1]),
+        solver_used="analytic_fallback",
+        confidence=0.5,
+        fallback_rung="floor",
+        trace_id="",
+    )
+
+
+def _resolve_oracle():
+    return STRESS_ORACLE if STRESS_ORACLE is not None else _analytic_oracle
+
+
+def _approx_volume(theta: dict) -> float:
+    return theta["length_mm"] * theta["width_mm"] * theta["thickness_mm"]
+
+
+# --- candidate assembly -------------------------------------------------------------------
+def _safe_contacts(mesh_path: str, plan: PlacementPlan) -> list:
+    """Real contacts via the check_contacts tool (<1 mm). Never raises (informational field)."""
+    if not mesh_path:
+        return []
+    try:
+        anchors = [json.loads(a.model_dump_json()) for a in plan.anchor_points]
+        return check_contacts(mesh_path, anchors)["contacts"]
+    except Exception:
+        return []
+
+
 def _candidate(plan, iteration, theta, mesh_path, validity, rung) -> ImplantCandidate:
     try:
         volume = float(abs(trimesh.load(mesh_path).volume)) if mesh_path else 0.0
@@ -84,7 +189,7 @@ def _candidate(plan, iteration, theta, mesh_path, validity, rung) -> ImplantCand
         iteration=iteration,
         parameter_vector=theta,
         mesh_path=mesh_path,
-        contacts_anchor_ids=[a.id for a in plan.anchor_points],
+        contacts_anchor_ids=_safe_contacts(mesh_path, plan),
         volume_mm3=volume,
         min_thickness_mm=float(theta["thickness_mm"]),
         validity=validity,
@@ -93,29 +198,134 @@ def _candidate(plan, iteration, theta, mesh_path, validity, rung) -> ImplantCand
     )
 
 
+def _make_candidate(plan, iteration, theta, rung) -> ImplantCandidate:
+    """Generate geometry for a clamped theta, assemble the candidate, run the post guardrail."""
+    result = generate_mesh(theta)  # ToolFailError on failure -> ladder advances
+    candidate = _candidate(plan, iteration, theta, result["mesh_path"], result["validity"], rung)
+    mesh_validity_check(candidate)  # post-invoke guardrail; RejectedOutput -> ladder advances
+    _LAST_GOOD[plan.case_id] = dict(theta)
+    return candidate
+
+
 def _build(inp, rung):
-    """Build a real candidate via the blender-mcp generate_mesh tool."""
+    """Day-1 seed-based builder, kept as the no-LLM path: seed theta from plan -> candidate."""
     plan = inp["plan"]
-    theta = seed_theta(plan)
-    result = generate_mesh(theta)  # raises ToolFailError on failure -> the ladder advances
-    return _candidate(plan, inp["iteration"], theta, result["mesh_path"], result["validity"], rung)
+    return _make_candidate(plan, inp["iteration"], seed_theta(plan), rung)
+
+
+def _emit_span(trace, tool, started, inp, candidate, confidence):
+    trace.emit(
+        model_or_tool=tool,
+        latency_ms=int((time.time() - started) * 1000),
+        input_hash=hash_payload(
+            {
+                "case_id": inp["plan"].case_id,
+                "iteration": inp["iteration"],
+                "report_passed": getattr(inp.get("report"), "passed", None),
+            }
+        ),
+        output_hash=hash_payload(candidate.model_dump()),
+        confidence=confidence,
+    )
+
+
+# --- rung 1: LLM theta-proposer -----------------------------------------------------------
+def _build_prompt(theta: dict, report) -> str:
+    bounds = ", ".join(f"{k} in [{lo}, {hi}]" for k, (lo, hi) in THETA_BOUNDS.items())
+    if report is None:
+        last = "none (first iteration)"
+    else:
+        last = (
+            f"peak_von_mises={report.peak_von_mises_MPa:.1f} MPa, "
+            f"factor_of_safety={report.factor_of_safety:.2f}, "
+            f"stress_shielding_index={report.stress_shielding_index:.2f}, passed={report.passed}"
+        )
+    return (
+        "You are optimizing a titanium bone-fixation PLATE. Propose the next parameters.\n"
+        f"Current theta (mm): {json.dumps(theta)}\n"
+        f"Bounds: {bounds}\n"
+        f"Latest stress report: {last}\n"
+        "Goal: minimize peak von Mises while keeping factor_of_safety >= 1.5 and "
+        "stress_shielding_index within [0.6, 0.9] (thicker raises FoS but lowers the shielding index).\n"
+        "Respond with ONLY a JSON object of the theta fields to change, as new absolute values."
+    )
+
+
+def _llm_propose_theta(base_theta, report, trace) -> dict:
+    messages = [{"role": "user", "content": _build_prompt(base_theta, report)}]
+    try:
+        response = llm.call_llm(
+            stage="synthesize", messages=messages, model="bedrock/claude-sonnet", trace=trace
+        )
+        delta = json.loads(response.choices[0].message.content)
+    except (json.JSONDecodeError, IndexError, KeyError, TypeError, openai.OpenAIError) as exc:
+        raise RetryableError(f"LLM theta-proposal failed: {exc}")
+    theta = dict(base_theta)
+    for key in THETA_BOUNDS:
+        if key in delta:
+            theta[key] = delta[key]
+    return theta
 
 
 def _rung1(inp, trace):
     if os.getenv("OSTEON_FORCE_FAIL") == "synthesize":
         raise RetryableError("forced failure for demo")
-    # TODO(B, Day 2): LLM theta-proposer (Bedrock via call_llm), seeded by the last StressReport.
-    return _build(inp, rung=1)
+    started = time.time()
+    plan = inp["plan"]
+    proposed = _llm_propose_theta(seed_theta(plan), inp.get("report"), trace)
+    theta_bounds_check(proposed)  # pre-invoke guardrail: out-of-bounds LLM output -> RejectedOutput
+    candidate = _make_candidate(plan, inp["iteration"], clamp_theta(proposed), rung=1)
+    _emit_span(trace, "bedrock/claude-sonnet", started, inp, candidate, confidence=0.8)
+    return candidate
 
 
+# --- rung 2: CMA-ES numeric optimizer (no LLM) --------------------------------------------
+def _cma_optimize(plan, oracle, max_gens: int = 25) -> dict:
+    import cma
+
+    keys = list(THETA_BOUNDS.keys())
+    lows = np.array([THETA_BOUNDS[k][0] for k in keys], dtype=np.float64)
+    highs = np.array([THETA_BOUNDS[k][1] for k in keys], dtype=np.float64)
+    spans = highs - lows
+
+    def to_theta(unit_vec):
+        values = lows + np.clip(unit_vec, 0.0, 1.0) * spans
+        return clamp_theta({k: float(v) for k, v in zip(keys, values)})
+
+    def fitness(unit_vec):
+        theta = to_theta(unit_vec)
+        return _objective(oracle(theta), _approx_volume(theta))
+
+    seed_unit = (np.array([seed_theta(plan)[k] for k in keys], dtype=np.float64) - lows) / spans
+    es = cma.CMAEvolutionStrategy(
+        list(seed_unit), 0.25, {"bounds": [0, 1], "maxiter": max_gens, "verbose": -9, "seed": 1}
+    )
+    best_vec, best_fit = list(seed_unit), float("inf")
+    while not es.stop():
+        solutions = es.ask()
+        fits = [fitness(x) for x in solutions]
+        es.tell(solutions, fits)
+        i = int(np.argmin(fits))
+        if fits[i] < best_fit:
+            best_fit, best_vec = fits[i], solutions[i]
+    return to_theta(np.array(best_vec))
+
+
+def _rung2(inp, trace):
+    started = time.time()
+    plan = inp["plan"]
+    theta = _cma_optimize(plan, _resolve_oracle())
+    candidate = _make_candidate(plan, inp["iteration"], theta, rung=2)
+    _emit_span(trace, "cma-es", started, inp, candidate, confidence=0.6)
+    return candidate
+
+
+# --- floor: last-known-good theta + stop flag; never raises -------------------------------
 def _floor(inp, trace):
-    """Deterministic local floor: a guaranteed-watertight SOLID plate. Never raises.
-
-    (Day 2 wires in last-known-good theta + a stop flag once the controller loop exists.)
-    """
     plan = inp["plan"]
     iteration = inp["iteration"]
-    theta = seed_theta(plan)
+    theta = dict(_LAST_GOOD.get(plan.case_id) or seed_theta(plan))
+    theta["_stop"] = True  # controller termination flag (STANDARDIZATION §6 rung-3)
     try:
         box = trimesh.creation.box(
             extents=[theta["length_mm"], theta["width_mm"], theta["thickness_mm"]]
@@ -130,17 +340,25 @@ def _floor(inp, trace):
             "self_intersect": not bool(box.is_volume),
         }
         volume = float(abs(box.volume))
+        contacts = _safe_contacts(mesh_path, plan)
     except Exception:
-        mesh_path = ""
-        validity = {"watertight": False, "manifold": False, "self_intersect": True}
-        volume = 0.0
+        mesh_path, validity, volume, contacts = (
+            "",
+            {
+                "watertight": False,
+                "manifold": False,
+                "self_intersect": True,
+            },
+            0.0,
+            [],
+        )
     return ImplantCandidate(
         case_id=plan.case_id,
         candidate_id=f"cand-{iteration}-floor",
         iteration=iteration,
         parameter_vector=theta,
         mesh_path=mesh_path,
-        contacts_anchor_ids=[a.id for a in plan.anchor_points],
+        contacts_anchor_ids=contacts,
         volume_mm3=volume,
         min_thickness_mm=float(theta["thickness_mm"]),
         validity=validity,
@@ -149,13 +367,11 @@ def _floor(inp, trace):
     )
 
 
-# Day 1: rung 1 + floor. Day 2: with_fallback([_rung1, _rung2], _floor) once CMA-ES lands.
-run = with_fallback([_rung1], _floor)
+run = with_fallback([_rung1, _rung2], _floor)
 
 
 if __name__ == "__main__":
     import glob
-    import json
     import shutil
 
     from common.trace import LoopTrace
@@ -175,7 +391,6 @@ if __name__ == "__main__":
             shutil.copyfile(candidate.mesh_path, stl_dst)
 
         data = json.loads(candidate.model_dump_json())
-        # Point the committed fixture at the committed STL (repo-relative) for Split C.
         data["mesh_path"] = f"split_b_synthesis/fixtures/implant_candidate_{plan.case_id}.stl"
         (out_dir / f"implant_candidate_{plan.case_id}.json").write_text(json.dumps(data, indent=2))
 
