@@ -16,18 +16,22 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
 from common.contracts import CaseSpec, ImplantCandidate, PlacementPlan
+from common.settings import settings
 from common.trace import LoopTrace
+from implants_gen import THETAS, ensure_implant
 from split_c_evaluation import engine
 from split_c_evaluation.engine import run as evaluate
 
 ROOT = Path(__file__).resolve().parent.parent
 A_FIXTURES = ROOT / "split_a_localization" / "fixtures"
-B_FIXTURES = ROOT / "split_b_synthesis" / "fixtures"
+IMPLANTS = Path(__file__).resolve().parent / "implants"
 app = Flask(__name__)
 
 MATERIALS = {
@@ -80,6 +84,42 @@ CASES = {
 LOADS = {"Walking": 700, "Stair climb": 1500, "Stumble": 2600}
 FAIL_MODES = {"none", "evaluate", "evaluate_floor"}
 
+# Demo patient records (fictional) so the dashboard reads like a clinical workspace.
+PATIENTS = {
+    "c1": {
+        "name": "Marcus Chen",
+        "age": 34,
+        "sex": "M",
+        "mrn": "OST-10472",
+        "side": "Left",
+        "procedure": "ORIF — locking compression plate",
+    },
+    "c2": {
+        "name": "Patricia Alvarez",
+        "age": 58,
+        "sex": "F",
+        "mrn": "OST-20815",
+        "side": "Right",
+        "procedure": "ORIF — locking compression plate",
+    },
+    "c3": {
+        "name": "James O'Connor",
+        "age": 41,
+        "sex": "M",
+        "mrn": "OST-31190",
+        "side": "Right",
+        "procedure": "ORIF — bridge plating",
+    },
+    "c4": {
+        "name": "Eleanor Whitfield",
+        "age": 72,
+        "sex": "F",
+        "mrn": "OST-40736",
+        "side": "Left",
+        "procedure": "ORIF — locking compression plate",
+    },
+}
+
 
 def _load_plan(name: str) -> PlacementPlan:
     p = A_FIXTURES / name
@@ -88,8 +128,23 @@ def _load_plan(name: str) -> PlacementPlan:
     return PlacementPlan(**json.load(open(p)))
 
 
-def _load_candidate(name: str) -> ImplantCandidate:
-    return ImplantCandidate(**json.load(open(B_FIXTURES / name)))
+def _candidate_for(case_key: str, case_id: str = "implant-eval") -> ImplantCandidate:
+    """Split B's per-patient implant design (distinct geometry + its watertight STL)."""
+    th = THETAS[case_key]
+    stl = ensure_implant(case_key, IMPLANTS)
+    return ImplantCandidate(
+        case_id=case_id,
+        candidate_id=f"{case_key}-implant",
+        iteration=0,
+        parameter_vector=th,
+        mesh_path=str(stl),
+        contacts_anchor_ids=[],
+        volume_mm3=round(th["length_mm"] * th["width_mm"] * th["thickness_mm"] * 0.85, 1),
+        min_thickness_mm=th["thickness_mm"],
+        validity={"watertight": True, "manifold": True, "self_intersect": False},
+        fallback_rung=1,
+        trace_id="",
+    )
 
 
 def _stl_path(cand: ImplantCandidate) -> Path:
@@ -112,16 +167,26 @@ def _read_spans(trace_id: str) -> list[dict]:
 
 @app.route("/")
 def index():
-    cases = [{"id": k, "label": v["label"]} for k, v in CASES.items()]
-    return render_template("index.html", cases=cases, loads=list(LOADS.keys()))
+    patients = []
+    for k, cfg in CASES.items():
+        p = PATIENTS[k]
+        patients.append(
+            {
+                "id": k,
+                "name": p["name"],
+                "initials": "".join(w[0] for w in p["name"].split()[:2]).upper(),
+                "demo": f'{p["age"]} {p["sex"]}',
+                "site": f'{p["side"]} {cfg["bone"].lower()} · {cfg["material"].split(" (")[0]}',
+            }
+        )
+    return render_template("index.html", patients=patients, loads=list(LOADS.keys()))
 
 
 @app.route("/mesh/<case_id>.stl")
 def mesh(case_id):
-    cfg = CASES.get(case_id)
-    if not cfg:
+    if case_id not in CASES:
         abort(404)
-    path = _stl_path(_load_candidate(cfg["cand"]))
+    path = ensure_implant(case_id, IMPLANTS)
     if not path.exists():
         abort(404)
     return send_file(path, mimetype="model/stl")
@@ -147,7 +212,7 @@ def run():
     mat = MATERIALS[cfg["material"]]
 
     plan = _load_plan(cfg["plan"])
-    candidate = _load_candidate(cfg["cand"])  # Split B's real output (path to watertight STL)
+    candidate = _candidate_for(case_key, plan.case_id)  # Split B's per-patient implant + STL
     trace = LoopTrace(plan.case_id, stage="evaluate")
     candidate.trace_id = trace.trace_id
 
@@ -193,6 +258,12 @@ def run():
     stl_ok = _stl_path(candidate).exists()
     return jsonify(
         {
+            "patient": {
+                **PATIENTS.get(case_key, {}),
+                "bone": cfg["bone"],
+                "defect": cfg["defect"],
+                "date": "2026-06-03",
+            },
             "case": {
                 "label": cfg["label"],
                 "bone": cfg["bone"],
@@ -230,6 +301,116 @@ def run():
             "spans": _read_spans(report.trace_id),
         }
     )
+
+
+def _blender_bin() -> str:
+    return (
+        os.environ.get("OSTEON_BLENDER")
+        or shutil.which("blender")
+        or "/Applications/Blender.app/Contents/MacOS/Blender"
+    )
+
+
+def _make_case(cfg: dict, plan: PlacementPlan, load_key: str) -> CaseSpec:
+    mat = MATERIALS[cfg["material"]]
+    load_N = LOADS.get(load_key, 700)
+    return CaseSpec(
+        case_id=plan.case_id,
+        bone_mesh_path=plan.fit_target_surface_path,
+        bone_material={"E_cortical_MPa": cfg["bone_E"], "E_trabecular_MPa": 1000, "density": 1.9},
+        defect={
+            "type": "fracture",
+            "region": "diaphysis",
+            "severity": "moderate",
+            "description": cfg["defect"],
+        },
+        load_profile=[
+            {
+                "name": load_key,
+                "force_vector_N": {"x": 0, "y": 0, "z": load_N},
+                "application_region": "mid-diaphysis",
+                "cycles": 1_000_000,
+            }
+        ],
+        implant_material={"name": cfg["material"], **mat},
+        constraints={"process": "additive"},
+    )
+
+
+def _heatmap_paths(case_key: str):
+    stem = ensure_implant(case_key, IMPLANTS).stem  # "c1" ...
+    out = Path(settings.OSTEON_TRACE_DIR).resolve()  # absolute, so send_file works
+    return out / f"{stem}_heatmap.png", out / f"{stem}_heatmap.blend"
+
+
+@app.route("/api/heatmap", methods=["POST"])
+def heatmap():
+    """Render the Blender stress model (PNG + .blend) for the selected case."""
+    b = request.get_json(force=True, silent=True) or {}
+    case_key = b.get("case") if b.get("case") in CASES else next(iter(CASES))
+    load_key = b.get("load") if b.get("load") in LOADS else "Walking"
+    cfg = CASES[case_key]
+    plan = _load_plan(cfg["plan"])
+    candidate = _candidate_for(case_key, plan.case_id)
+    trace = LoopTrace(plan.case_id, stage="evaluate")
+    candidate.trace_id = trace.trace_id
+    case = _make_case(cfg, plan, load_key)
+    try:
+        out = engine.render_heatmap(candidate, case, trace)  # -> PNG + .blend under traces/
+    except Exception as exc:  # never 500 the UI
+        return jsonify({"error": str(exc)[:200]}), 200
+    return jsonify(
+        {
+            "png_url": f"/heatmap/{case_key}.png",
+            "blend_url": f"/heatmap/{case_key}.blend",
+            "peak_mpa": out["peak_mpa"],
+            "solver_used": out["solver_used"],
+            "blend_name": Path(out["blend_path"]).name,
+        }
+    )
+
+
+@app.route("/heatmap/<case_id>.png")
+def heatmap_png(case_id):
+    if case_id not in CASES:
+        abort(404)
+    png, _ = _heatmap_paths(case_id)
+    if not png.exists():
+        abort(404)
+    return send_file(png, mimetype="image/png")
+
+
+@app.route("/heatmap/<case_id>.blend")
+def heatmap_blend(case_id):
+    if case_id not in CASES:
+        abort(404)
+    _, blend = _heatmap_paths(case_id)
+    if not blend.exists():
+        abort(404)
+    return send_file(
+        blend,
+        mimetype="application/octet-stream",
+        as_attachment=True,
+        download_name=f"osteon_{case_id}_stress.blend",
+    )
+
+
+@app.route("/api/open-blender", methods=["POST"])
+def open_blender():
+    """Launch the local Blender GUI with the rendered .blend so the user sees the model."""
+    b = request.get_json(force=True, silent=True) or {}
+    case_key = b.get("case") if b.get("case") in CASES else next(iter(CASES))
+    _, blend = _heatmap_paths(case_key)
+    if not blend.exists():
+        return jsonify({"ok": False, "error": "render the model first"}), 200
+    blender = _blender_bin()
+    if not (os.path.exists(blender) or shutil.which(blender)):
+        return jsonify({"ok": False, "error": "Blender not found"}), 200
+    try:
+        subprocess.Popen([blender, str(blend)])  # detached GUI
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 200
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
