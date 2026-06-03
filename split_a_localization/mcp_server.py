@@ -117,5 +117,36 @@ def render_markers(plan: dict) -> dict:
     return {"png_path": output_png_path}
 
 
+def open_in_blender(plan: dict, save_blend: str | None = None) -> dict:
+    """Open the live 3D marker scene in the Blender GUI (interactive, not a flat PNG).
+
+    Local dev/visualization helper — not an MCP tool. Launches Blender non-headless so
+    you can orbit/inspect the bone, anchors, defect, and frame axes. If `save_blend` is
+    given, also writes a reusable .blend file.
+    """
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as plan_file:
+        json.dump(plan, plan_file)
+        plan_path = plan_file.name
+
+    bone_mesh_path = plan.get("fit_target_surface_path")
+    if not bone_mesh_path or not os.path.exists(bone_mesh_path):
+        bone_mesh_path = ""
+
+    blender_script_path = str(Path(__file__).resolve().parent / "blender_render.py")
+    output_arg = save_blend if save_blend else "view"
+
+    cmd = [
+        _blender_bin(), "--python", blender_script_path,
+        "--", plan_path, bone_mesh_path, output_arg,
+    ]
+    try:
+        proc = subprocess.Popen(cmd)  # non-blocking: GUI stays open
+    except FileNotFoundError as e:
+        os.unlink(plan_path)
+        raise ToolFailError(f"Blender launch failed: {e}") from e
+
+    return {"pid": proc.pid, "blend_path": save_blend, "plan_path": plan_path}
+
+
 if __name__ == "__main__":
     mcp.run()

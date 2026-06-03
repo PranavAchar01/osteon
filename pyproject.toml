@@ -16,7 +16,7 @@ dependencies = [
 localization = ["open3d", "trimesh", "scikit-learn", "torch", "pydicom"]
 synthesis = ["trimesh", "pymeshlab", "cma"]
 evaluation = ["trimesh", "sfepy", "pycalculix"]
-dev = ["pytest", "ruff", "black"]
+dev = ["pytest", "ruff", "black", "scikit-image"]  # scikit-image: scripts/make_femur.py fixture generation
 
 [tool.black]
 line-length = 100
