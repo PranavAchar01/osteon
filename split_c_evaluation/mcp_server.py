@@ -24,7 +24,7 @@ from common.mcp_base import osteon_tool
 from common.settings import settings
 
 from . import fea
-from .guardrails import mesh_watertight_gate
+from .guardrails import heatmap_field_gate, mesh_watertight_gate
 
 mcp = FastMCP("fea-mcp")
 
@@ -115,14 +115,146 @@ def run_calculix(
         if had_alarm:
             signal.alarm(0)
 
+    # Surface the FULL von Mises field (per element), not just the scalar peak, so the
+    # heat map can be coloured from the same solve. (CalculiX path would parse the .frd;
+    # the sfepy path already has per-cell stress.)
+    cen = res["centroids"]
+    vmf = res["von_mises"]
     return {
         "peak_von_mises_MPa": round(float(res["peak_von_mises_MPa"]), 3),
         "displacement_max_mm": round(float(res["displacement_max_mm"]), 5),
         "peak_location": [round(c, 3) for c in res["peak_location"]],
         "strain_energy": round(float(res["strain_energy"]), 4),
+        "nodes": [[round(float(c), 3) for c in p] for p in cen],
+        "von_mises": [round(float(v), 3) for v in vmf],
+        "peak_xyz": [round(c, 3) for c in res["peak_location"]],
         "solver_used": "full_fea",
         "engine": engine_used,
         "ccx_binary": ccx or None,
+    }
+
+
+@osteon_tool(mcp)
+def render_stress_heatmap(
+    mesh_path: str,
+    stress_field: list,
+    yield_mpa: float,
+    bone_path: str = "",
+    solver_used: str = "full_fea",
+    factor_of_safety: float = None,
+) -> dict:
+    """Paint per-vertex von Mises stress onto the implant surface and render it headless
+    in Blender (PNG + interactive .blend). Fixed [0, yield] colour normalisation so colours
+    are comparable across cases; a peak-stress marker is dropped at the hot spot.
+
+    Returns {png_path, blend_path, peak_mpa, peak_location}.
+    """
+    import json as _json
+    import subprocess
+    import tempfile
+
+    import matplotlib as mpl
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import trimesh
+    from PIL import Image
+
+    mpl.use("Agg")
+
+    if not os.path.exists(mesh_path):
+        raise ToolFailError(f"mesh not found: {mesh_path}")
+    mesh_watertight_gate(mesh_path)  # pre-invoke: never render a garbage mesh
+    verts = np.asarray(trimesh.load(mesh_path, force="mesh").vertices, dtype=float)
+    heatmap_field_gate(stress_field, len(verts))  # pre-render: validate the field
+
+    vm = np.asarray(stress_field, dtype=float)
+    peak = float(vm.max())
+    pk = int(vm.argmax())
+    peak_xyz = verts[pk].tolist()
+    yld = float(yield_mpa) if yield_mpa and yield_mpa > 0 else max(peak, 1.0)
+    fos = factor_of_safety if factor_of_safety is not None else (yld / peak if peak > 0 else None)
+
+    # FIXED [0, yield] normalisation (do NOT auto-scale) -> same colour means same MPa.
+    cmap = mpl.colormaps["turbo"]
+    rgba = cmap(np.clip(vm / yld, 0.0, 1.0))
+
+    out_dir = Path(settings.OSTEON_TRACE_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(mesh_path).stem
+    data = {
+        "vertices": verts.tolist(),
+        "rgba": rgba.tolist(),
+        "peak_xyz": peak_xyz,
+        "marker_radius": float((verts.max(0) - verts.min(0)).max() * 0.04),
+    }
+    dj = tempfile.mktemp(suffix=".json")
+    with open(dj, "w") as f:
+        _json.dump(data, f)
+    v0, v1 = tempfile.mktemp(suffix=".png"), tempfile.mktemp(suffix=".png")
+    blend_path = str(out_dir / f"{stem}_heatmap.blend")
+    png_path = str(out_dir / f"{stem}_heatmap.png")
+
+    blender = (
+        os.environ.get("OSTEON_BLENDER")
+        or shutil.which("blender")
+        or "/Applications/Blender.app/Contents/MacOS/Blender"
+    )
+    script = str(Path(__file__).resolve().parent / "heatmap_render.py")
+    cmd = [blender, "--background", "--python", script, "--", mesh_path, dj, v0, v1, blend_path]
+    if bone_path and os.path.exists(bone_path):
+        cmd.append(bone_path)
+    timeout_s = max(45, int(settings.OSTEON_DEADLINE_MS / 1000) * 4)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        raise ToolFailError(f"heatmap render exceeded {timeout_s}s") from exc
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise ToolFailError(
+            f"Blender heatmap render failed: {getattr(exc, 'stderr', exc)}"
+        ) from exc
+    finally:
+        if os.path.exists(dj):
+            os.unlink(dj)
+
+    # legend: vertical colour bar, fixed [0, yield], annotated with peak / yield / FoS / rung
+    legend = tempfile.mktemp(suffix=".png")
+    fig, ax = plt.subplots(figsize=(2.7, 9), dpi=100)
+    norm = mpl.colors.Normalize(vmin=0, vmax=yld)
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    fig.colorbar(sm, cax=ax)
+    ax.set_ylabel("von Mises stress (MPa)", fontsize=12)
+    title = f"peak {peak:.0f} MPa\nyield {yld:.0f} MPa"
+    if fos is not None:
+        title += f"\nFoS {fos:.1f}"
+    title += f"\nsolver: {solver_used}"
+    ax.set_title(title, fontsize=11)
+    fig.savefig(legend, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+    # montage: [anterior view | lateral view | legend]
+    imgs = [Image.open(p).convert("RGB") for p in (v0, v1, legend)]
+    h = max(im.height for im in imgs)
+    imgs = [im.resize((max(1, int(im.width * h / im.height)), h)) for im in imgs]
+    canvas = Image.new("RGB", (sum(im.width for im in imgs), h), "white")
+    x = 0
+    for im in imgs:
+        canvas.paste(im, (x, 0))
+        x += im.width
+    canvas.save(png_path)
+    for p in (v0, v1, legend):
+        if os.path.exists(p):
+            os.unlink(p)
+
+    return {
+        "png_path": png_path,
+        "blend_path": blend_path,
+        "peak_mpa": round(peak, 3),
+        "peak_location": {
+            "x": round(peak_xyz[0], 3),
+            "y": round(peak_xyz[1], 3),
+            "z": round(peak_xyz[2], 3),
+        },
     }
 
 

@@ -36,6 +36,22 @@ def mesh_watertight_gate(mesh_path: str) -> bool:
     return True
 
 
+def heatmap_field_gate(stress_field, n_vertices: int):
+    """PRE-RENDER. Raise RejectedOutput unless `stress_field` is a finite, non-empty
+    per-vertex array whose length matches the mesh vertex count. A bad field paints a
+    meaningless map, so the ladder should advance to a coarser (but valid) field source."""
+    if stress_field is None or len(stress_field) == 0:
+        raise RejectedOutput("heatmap-field-gate: empty stress field")
+    if len(stress_field) != n_vertices:
+        raise RejectedOutput(
+            f"heatmap-field-gate: field length {len(stress_field)} != {n_vertices} vertices"
+        )
+    for v in stress_field:
+        if v is None or _bad_number(v):
+            raise RejectedOutput("heatmap-field-gate: field contains NaN/inf")
+    return True
+
+
 def _bad_number(x) -> bool:
     try:
         return math.isnan(x) or math.isinf(x)

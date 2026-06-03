@@ -80,6 +80,16 @@ def analytic_cantilever(g: BeamGeom, E: float, P: float) -> dict:
     return {"peak_von_mises_MPa": abs(sigma_root), "displacement_max_mm": abs(tip_disp)}
 
 
+def bending_moment(x, L: float, P: float, mode: str = "three_point"):
+    """Bending moment at axial position(s) x (0 at one end). Accepts scalar or numpy array."""
+    x = np.asarray(x, dtype=float)
+    if mode == "axial":
+        return np.zeros_like(x)
+    if mode == "cantilever":
+        return P * (L - x)  # max at the fixed end (x=0)
+    return np.where(x <= L / 2.0, P * x / 2.0, P * (L - x) / 2.0)  # three-point: max mid-span
+
+
 def analytic_cantilever_sigma_at(g: BeamGeom, P: float, x: float) -> float:
     """Bending stress at the top fibre at axial position x (0 at the clamp)."""
     M = P * (g.L - x)

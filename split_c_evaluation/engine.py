@@ -22,6 +22,7 @@ import os
 from common.contracts import CaseSpec, ImplantCandidate, StressReport, Vec3
 from common.errors import RejectedOutput, RetryableError
 from common.ladder import with_fallback
+from common.trace import LoopTrace
 
 from . import fea
 from .guardrails import report_nan_gate
@@ -274,6 +275,63 @@ def _floor(inp, trace):
 
 
 run = with_fallback([_rung1, _rung2], _floor)
+
+
+# --------------------------------------------------------------------------- #
+# Stress heat-map field (NEW) — per-vertex von Mises sampled onto the render STL.
+# The field shape follows the bending solution; its peak is scaled to the StressReport
+# peak from the SAME solve, so the picture and the numbers agree (heatmap §10.4).
+# --------------------------------------------------------------------------- #
+def _field_arrays(cand, case, mode):
+    import numpy as np
+    import trimesh
+
+    verts = np.asarray(trimesh.load(cand.mesh_path, force="mesh").vertices, dtype=float)
+    ext = verts.max(0) - verts.min(0)
+    i_len, i_thk = int(np.argmax(ext)), int(np.argmin(ext))
+    L = float(ext[i_len])
+    P, _c = _load_N(case)
+    x0 = verts[:, i_len] - verts[:, i_len].min()
+    mid = (verts[:, i_thk].max() + verts[:, i_thk].min()) / 2.0
+    fib = verts[:, i_thk] - mid
+    raw = np.abs(fea.bending_moment(x0, L, P, mode) * fib)  # proportional to sigma_vM
+    return verts, raw
+
+
+def _build_field(cand, case, mode, peak):
+    raw = _field_arrays(cand, case, mode)[1]
+    mx = float(raw.max())
+    return (raw / mx * peak).tolist() if mx > 0 else [peak] * len(raw)
+
+
+def stress_field(cand, case, mode=BENDING_MODE):
+    """Per-vertex von Mises stress (MPa) on the implant STL, scaled so its peak equals
+    the StressReport peak from the same solve. Aligned to the STL's vertex order."""
+    rep = run(
+        {"candidate": cand, "case": case, "mode": mode}, LoopTrace(cand.case_id, stage="evaluate")
+    )
+    return _build_field(cand, case, mode, rep.peak_von_mises_MPa)
+
+
+def render_heatmap(cand, case, trace=None, mode=BENDING_MODE):
+    """Solve once, build the field, render the Blender heat map, and log the artifact
+    under the case's trace (no contract change, §8). Returns the tool output + report."""
+    from .mcp_server import render_stress_heatmap
+
+    trace = trace or LoopTrace(cand.case_id, stage="evaluate")
+    rep = run({"candidate": cand, "case": case, "mode": mode}, trace)
+    field = _build_field(cand, case, mode, rep.peak_von_mises_MPa)
+    _e, yld, _en = _material(case)
+    out = render_stress_heatmap(
+        cand.mesh_path, field, yld, "", rep.solver_used, rep.factor_of_safety
+    )
+    trace.emit(
+        span="evaluate:heatmap",
+        heatmap_png=out["png_path"],
+        heatmap_blend=out["blend_path"],
+        peak_mpa=out["peak_mpa"],
+    )
+    return {**out, "solver_used": rep.solver_used, "report": rep.model_dump()}
 
 
 # --------------------------------------------------------------------------- #

@@ -8,6 +8,7 @@ Runs with ZERO dependency on Split A or B.
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,18 @@ from common.errors import RejectedOutput
 from common.trace import LoopTrace
 from split_c_evaluation import engine, fea
 from split_c_evaluation.guardrails import mesh_watertight_gate, report_nan_gate
+
+
+def _blender_bin():
+    b = (
+        os.environ.get("OSTEON_BLENDER")
+        or shutil.which("blender")
+        or "/Applications/Blender.app/Contents/MacOS/Blender"
+    )
+    return b if os.path.exists(b) else None
+
+
+HAS_BLENDER = _blender_bin() is not None
 
 ROOT = Path(__file__).resolve().parent.parent
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -185,3 +198,94 @@ def test_mcp_shielding_solves_bone_twice(watertight_stl):
     assert out["bone_solves"] == 2  # intact + implanted
     assert 0.0 <= out["stress_shielding_index"] <= 1.0
     assert out["strain_energy_implanted"] <= out["strain_energy_intact"]
+
+
+# ------------------- 5. stress heat map (visual deliverable) -------------- #
+@pytest.fixture(scope="module")
+def b_candidate():
+    p = ROOT / "split_b_synthesis" / "fixtures" / "implant_candidate_test_case_01.json"
+    return ImplantCandidate(**json.load(open(p)))
+
+
+def _n_vertices(cand):
+    import trimesh
+
+    return len(trimesh.load(cand.mesh_path, force="mesh").vertices)
+
+
+def test_stress_field_aligned_and_finite(b_candidate, case):
+    field = engine.stress_field(b_candidate, case)
+    assert len(field) == _n_vertices(b_candidate)  # one value per surface vertex
+    assert all(math.isfinite(v) for v in field) and max(field) > 0
+
+
+def test_heatmap_field_gate_fires(b_candidate):
+    from split_c_evaluation.guardrails import heatmap_field_gate
+
+    n = _n_vertices(b_candidate)
+    assert heatmap_field_gate([1.0] * n, n) is True
+    with pytest.raises(RejectedOutput):
+        heatmap_field_gate([1.0] * (n - 1), n)  # length mismatch
+    with pytest.raises(RejectedOutput):
+        heatmap_field_gate([], n)  # empty
+    with pytest.raises(RejectedOutput):
+        heatmap_field_gate([float("nan")] * n, n)  # NaN
+
+
+def test_heatmap_cantilever_hotspot(b_candidate, case):
+    # §10.1: the hot spot lands at the fixed end (max moment) and the map's peak equals
+    # the StressReport peak from the same solve (§10.4). (The peak-vs-PL/Z 10% accuracy is
+    # the slender-beam benchmark — test_cantilever_fea_within_10pct — not this wide plate.)
+    import trimesh
+
+    field = np.asarray(engine.stress_field(b_candidate, case, mode="cantilever"))
+    V = np.asarray(trimesh.load(b_candidate.mesh_path, force="mesh").vertices)
+    iL = int(np.argmax(V.max(0) - V.min(0)))
+    rel = (V[int(field.argmax()), iL] - V[:, iL].min()) / np.ptp(V[:, iL])
+    assert rel < 0.2  # hot spot at the fixed (x0=0) end
+    rep = engine.run(
+        {"candidate": b_candidate, "case": case, "mode": "cantilever"},
+        LoopTrace(b_candidate.case_id, stage="evaluate"),
+    )
+    assert _pct(float(field.max()), rep.peak_von_mises_MPa) < 1.0  # picture == numbers
+
+
+def test_heatmap_fixed_normalization_comparable(b_candidate, case):
+    # §10.3: same colour = same MPa. A light load stays low; a heavy load reaches yield.
+    yld = case.implant_material["yield_MPa"]
+    light = max(engine.stress_field(b_candidate, case))  # default 700 N
+    heavy_case = case.model_copy(
+        update={
+            "load_profile": [
+                {
+                    "name": "x",
+                    "force_vector_N": {"x": 0, "y": 0, "z": 12000},
+                    "application_region": "mid",
+                    "cycles": 1_000_000,
+                }
+            ]
+        }
+    )
+    heavy = max(engine.stress_field(b_candidate, heavy_case))
+    assert light / yld < 0.3 and heavy / yld > light / yld
+
+
+def test_heatmap_resilience_field_from_fallback(b_candidate, case, monkeypatch):
+    # §10.5: kill the full FE solve -> field still builds from the surrogate, no crash
+    monkeypatch.setenv("OSTEON_FORCE_FAIL", "evaluate")
+    field = engine.stress_field(b_candidate, case)
+    assert len(field) == _n_vertices(b_candidate) and max(field) > 0
+
+
+@pytest.mark.skipif(not HAS_BLENDER, reason="Blender not installed")
+def test_render_stress_heatmap_artifacts(b_candidate, case):
+    # §10.4 / §10.6: render PNG + .blend; peak marker value equals the report peak
+    from split_c_evaluation import mcp_server
+
+    field = engine.stress_field(b_candidate, case)
+    out = mcp_server.render_stress_heatmap(
+        b_candidate.mesh_path, field, case.implant_material["yield_MPa"]
+    )
+    assert os.path.exists(out["png_path"]) and out["png_path"].endswith(".png")
+    assert os.path.exists(out["blend_path"]) and out["blend_path"].endswith(".blend")
+    assert out["peak_mpa"] == pytest.approx(max(field), abs=0.01)
