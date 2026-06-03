@@ -3,6 +3,8 @@
 Run: python split_a_localization/mcp_server.py
 Server name MUST match gateway/mcp-registry.yaml.
 """
+from pathlib import Path
+
 import trimesh
 import numpy as np
 from mcp.server.fastmcp import FastMCP
@@ -64,6 +66,19 @@ def measure_cortical_thickness(mesh_vertices: list, mesh_faces: list, xyz: list,
 import subprocess
 import tempfile
 import json
+import shutil
+
+from common.errors import ToolFailError
+import os
+
+
+def _blender_bin() -> str:
+    """Resolve the Blender executable: OSTEON_BLENDER, then PATH, then macOS default."""
+    return (
+        os.environ.get("OSTEON_BLENDER")
+        or shutil.which("blender")
+        or "/Applications/Blender.app/Contents/MacOS/Blender"
+    )
 
 @osteon_tool(mcp)
 def render_markers(plan: dict) -> dict:
@@ -82,27 +97,23 @@ def render_markers(plan: dict) -> dict:
     output_png_path = tempfile.mktemp(suffix=".png")
     bone_mesh_path = plan.get("fit_target_surface_path")
     
-    blender_script_path = "osteon/split_a_localization/blender_render.py"
+    blender_script_path = str(Path(__file__).resolve().parent / "blender_render.py")
 
     if not bone_mesh_path or not os.path.exists(bone_mesh_path):
-        # Handle case where bone mesh is not available
-        # For now, we'll proceed without it, Blender script should handle this
         bone_mesh_path = ""
 
     cmd = [
-        "blender", "--background", "--python", blender_script_path,
+        _blender_bin(), "--background", "--python", blender_script_path,
         "--", plan_path, bone_mesh_path, output_png_path
     ]
     
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        # Handle blender not being found or error during rendering
-        print(f"Blender rendering failed: {e}")
-        return {"png_path": None}
-    finally:
         os.unlink(plan_path)
-
+        raise ToolFailError(f"Blender rendering failed: {e}") from e
+    
+    os.unlink(plan_path)
     return {"png_path": output_png_path}
 
 
