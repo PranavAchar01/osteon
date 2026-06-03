@@ -6,6 +6,7 @@
 <title>Osteon</title>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <style>
   :root{
     --navy:#0f2742; --navy2:#1f5aa0; --soft:#eef3f9; --ink:#13243a; --mut:#69788a;
@@ -129,7 +130,7 @@ function render(d){
   const r=d.report, mat=d.material, a=d.from_a, b=d.from_b, c=d.case, matShort=mat.name.split(' (')[0];
 
   $('#srcA').innerHTML=`<b>${a.anchors}</b> anchor points · fit to <b>${c.bone.toLowerCase()}</b> surface · confidence ${fmt(a.confidence,2)}`;
-  $('#srcB').innerHTML=`<b>${fmt(b.length_mm)}×${fmt(b.width_mm)}×${fmt(b.thickness_mm)}</b> mm plate · <b>${b.n_screws}</b> screws · ${b.watertight?'watertight ✓':'not watertight'}`;
+  $('#srcB').innerHTML=`<b>${fmt(b.length_mm)}×${fmt(b.width_mm)}×${fmt(b.thickness_mm)}</b> mm plate · <b>${b.n_screws}</b> screws · ${b.watertight?'watertight ✓':'not watertight'} · ${b.mesh_file}`;
 
   const safe=r.passed;
   $('#verdict').className='verdict '+(safe?'':'no');
@@ -138,6 +139,8 @@ function render(d){
   if(safe) msg=`This ${matShort} plate safely supports the bone under a ${fmt(c.load_N)} N load, with a ${fmt(r.factor_of_safety,1)}× safety margin.`;
   else if(r.factor_of_safety<1) msg=`The plate's peak stress of ${fmt(r.peak_von_mises_MPa)} MPa exceeds the material limit of ${fmt(mat.yield_MPa)} MPa — it would break under a ${fmt(c.load_N)} N load.`;
   else msg=`Stress stays below the breaking point but above the safe limit for repeated loading (${fmt(mat.endurance_limit_MPa)} MPa) — risk of cracking over time.`;
+  if(safe && r.stress_shielding_index<0.3)
+    msg+=` But it is much stiffer than the bone — the bone keeps only ${Math.round(r.stress_shielding_index*100)}% of its natural load (stress shielding), which can weaken it over time.`;
   $('#vmsg').textContent=msg;
   $('#vctx').textContent=`${c.bone} · ${c.defect.toLowerCase()} · ${matShort} · ${c.load_scenario} (${fmt(c.load_N)} N)`;
 
@@ -189,52 +192,74 @@ function deflect(x0,L,P,E,I,mode){ if(mode==='axial'||I<=0||E<=0)return 0;
   if(mode==='cantilever')return P*x0*x0*(3*L-x0)/(6*E*I); const x=x0<=L/2?x0:L-x0; return P*x*(3*L*L-4*x*x)/(48*E*I); }
 function disposeTree(o){ o.traverse(n=>{ if(n.geometry)n.geometry.dispose(); if(n.material){(Array.isArray(n.material)?n.material:[n.material]).forEach(m=>m.dispose());} }); }
 
+const stlCache={};
 function build3D(d){
   if(!renderer) return;
-  const g=d.geom, L=g.L, W=g.b, T=g.h, mode='three_point';
-  const P=d.case.load_N, E=d.material.E_MPa, yld=d.material.yield_MPa, nScrew=d.from_b.n_screws||6;
-  const R=11, boneLen=L*1.75, gap=6;                 // bone radius, length, fracture gap
+  if(d.mesh_url){
+    if(stlCache[d.mesh_url]) buildScene(d, stlCache[d.mesh_url]);
+    else new THREE.STLLoader().load(d.mesh_url, geo=>{ stlCache[d.mesh_url]=geo; buildScene(d, geo); },
+      undefined, ()=>buildScene(d, null));
+  } else buildScene(d, null);
+}
+
+function buildScene(d, stlGeo){
+  if(!renderer) return;
+  const g=d.geom, W=g.b, T=g.h, mode='three_point';
+  const P=d.case.load_N, E=d.material.E_MPa, yld=d.material.yield_MPa, nScrew=d.from_b.n_screws||4;
   if(world){ scene.remove(world); disposeTree(world); }
   world=new THREE.Group();
 
-  // --- bone (two shaft segments + rounded ends), ivory, lit ---
-  const boneMat=new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, metalness:0.0});
-  function shaft(x0,x1){ const len=x1-x0; const cyl=new THREE.Mesh(new THREE.CylinderGeometry(R,R,len,28), boneMat);
-    cyl.rotation.z=Math.PI/2; cyl.position.x=(x0+x1)/2; return cyl; }
-  world.add(shaft(-boneLen/2, -gap/2)); world.add(shaft(gap/2, boneLen/2));
-  [-1,1].forEach(s=>{ const ep=new THREE.Mesh(new THREE.SphereGeometry(R*1.5,24,18), boneMat);
-    ep.scale.set(0.8,1,1); ep.position.x=s*boneLen/2; world.add(ep); });
+  // --- implant geometry: B's real STL (reoriented length->x, thickness->y), else a box ---
+  let geo;
+  if(stlGeo){
+    geo=stlGeo.clone(); geo.computeBoundingBox();
+    const s=new THREE.Vector3(); geo.boundingBox.getSize(s); const e=[s.x,s.y,s.z];
+    const iL=e.indexOf(Math.max(...e)), iT=e.indexOf(Math.min(...e)), iW=3-iL-iT;
+    const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iT,1), bz=new THREE.Vector3().setComponent(iW,1);
+    geo.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
+    geo.center();
+  } else {
+    geo=new THREE.BoxGeometry(g.L,T,W, Math.max(24,Math.round(g.L/2)),3,Math.max(5,Math.round(W/2))).toNonIndexed();
+  }
+  geo.computeBoundingBox(); const bs=new THREE.Vector3(); geo.boundingBox.getSize(bs);
+  const Lg=bs.x||g.L, Tg=bs.y||T, Ip=W*T*T*T/12;
 
-  // --- implant plate, coloured by stress, bent under load ---
-  let geo=new THREE.BoxGeometry(L,T,W, Math.min(70,Math.max(24,Math.round(L/2))), 3, Math.max(5,Math.round(W/2))).toNonIndexed();
-  const Ip=W*T*T*T/12, pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
-  for(let t=0;t<n;t+=3){ let cx=0,cy=0; for(let k=0;k<3;k++){cx+=pos.getX(t+k);cy+=pos.getY(t+k);} cx/=3; cy/=3;
-    const x0=cx+L/2, vm=Math.abs(moment(x0,L,P,mode)*cy/Ip), c=band(yld>0?vm/yld:0);
-    for(let k=0;k<3;k++){ col[(t+k)*3]=c.r; col[(t+k)*3+1]=c.g; col[(t+k)*3+2]=c.b; } }
-  let maxW=1e-9; for(let x=0;x<=L;x+=L/40) maxW=Math.max(maxW,Math.abs(deflect(x,L,P,E,Ip,mode)));
-  const sc=(maxW>0)?Math.min(0.06*L,7)/maxW:0;
-  for(let i=0;i<n;i++){ const x0=pos.getX(i)+L/2; pos.setY(i, pos.getY(i)-deflect(x0,L,P,E,Ip,mode)*sc); }
+  // --- bone sized to the plate (two shaft segments + rounded ends), ivory, lit ---
+  const R=Math.max(W*0.55,10), boneLen=Lg*1.9, gap=Math.max(Lg*0.08,6);
+  const boneMat=new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, metalness:0.0});
+  const shaft=(x0,x1)=>{ const c=new THREE.Mesh(new THREE.CylinderGeometry(R,R,x1-x0,28),boneMat); c.rotation.z=Math.PI/2; c.position.x=(x0+x1)/2; return c; };
+  world.add(shaft(-boneLen/2,-gap/2)); world.add(shaft(gap/2,boneLen/2));
+  [-1,1].forEach(si=>{ const ep=new THREE.Mesh(new THREE.SphereGeometry(R*1.5,24,18),boneMat); ep.scale.set(0.8,1,1); ep.position.x=si*boneLen/2; world.add(ep); });
+
+  // --- colour + bend the real implant mesh by the stress field ---
+  const pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
+  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2, fib=pos.getY(i);
+    const vm=Math.abs(moment(x0,Lg,P,mode)*fib/Ip), c=band(yld>0?vm/yld:0);
+    col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
+  let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Ip,mode)));
+  const dsc=(maxW>0)?Math.min(0.05*Lg,5)/maxW:0;
+  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Ip,mode)*dsc); }
   pos.needsUpdate=true; geo.setAttribute('color',new THREE.BufferAttribute(col,3));
-  const plate=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true}));
-  plate.position.y=R+T/2+0.5; world.add(plate);
-  world.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo,30), new THREE.LineBasicMaterial({color:0x33485f})));
-  world.children[world.children.length-1].position.y=plate.position.y;
+  const implant=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true}));
+  implant.position.y=R+Tg/2+0.5; world.add(implant);
+  const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo,35), new THREE.LineBasicMaterial({color:0x33485f}));
+  edge.position.y=implant.position.y; world.add(edge);
 
   // --- screws into bone, skipping the central fracture zone ---
   const screwMat=new THREE.MeshStandardMaterial({color:0x9aa1aa, roughness:0.4, metalness:0.55});
-  const per=Math.max(1,Math.floor(nScrew/2)), inner=gap/2+8, outer=L/2-6;
-  for(let s=0;s<per;s++){ const f=per===1?0.5:s/(per-1), x=inner+(outer-inner)*f;
-    [-1,1].forEach(side=>{ const sc2=new THREE.Mesh(new THREE.CylinderGeometry(1.7,1.7,T+R+4,12), screwMat);
-      sc2.position.set(side*x, R+T-(T+R+4)/2+1, 0); world.add(sc2);
-      const head=new THREE.Mesh(new THREE.CylinderGeometry(2.7,2.7,1.6,12), screwMat);
-      head.position.set(side*x, R+T+1.2, 0); world.add(head); }); }
+  const per=Math.max(1,Math.floor(nScrew/2)), inner=gap/2+Lg*0.12, outer=Lg/2-4;
+  for(let s=0;s<per;s++){ const f=per===1?0.6:s/(per-1), x=inner+(outer-inner)*f;
+    [-1,1].forEach(side=>{ const body=new THREE.Mesh(new THREE.CylinderGeometry(1.7,1.7,Tg+R+4,12),screwMat);
+      body.position.set(side*x, R+Tg-(Tg+R+4)/2+1, 0); world.add(body);
+      const head=new THREE.Mesh(new THREE.CylinderGeometry(2.6,2.6,1.5,12),screwMat);
+      head.position.set(side*x, R+Tg+1.2, 0); world.add(head); }); }
 
   scene.add(world);
   const dist=boneLen*1.05;
-  camera.position.set(dist*0.18, dist*0.5, dist*0.95);
+  camera.position.set(dist*0.16, dist*0.5, dist*0.95);
   camera.near=dist/200; camera.far=dist*30; camera.updateProjectionMatrix();
-  controls.target.set(0, R*0.4, 0); controls.update();
-  $('#tip2').textContent='bending exaggerated for clarity · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
+  controls.target.set(0,R*0.4,0); controls.update();
+  $('#tip2').textContent=(stlGeo?'B’s implant mesh · ':'box approximation · ')+'bending exaggerated · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
 }
 
 init3D(); run();
