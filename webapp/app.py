@@ -127,6 +127,15 @@ def mesh(case_id):
     return send_file(path, mimetype="model/stl")
 
 
+@app.route("/bone.stl")
+def bone():
+    """Split A's realistic femur fixture (the fit-target bone surface)."""
+    p = ROOT / "fixtures" / "dummy_bone.stl"
+    if not p.exists():
+        abort(404)
+    return send_file(p, mimetype="model/stl")
+
+
 @app.route("/api/run", methods=["POST"])
 def run():
     b = request.get_json(force=True, silent=True) or {}
@@ -217,6 +226,7 @@ def run():
                 "Z_mm3": round(g.section_modulus, 1),
             },
             "mesh_url": f"/mesh/{case_key}.stl" if stl_ok else None,
+            "bone_url": "/bone.stl" if (ROOT / "fixtures" / "dummy_bone.stl").exists() else None,
             "spans": _read_spans(report.trace_id),
         }
     )

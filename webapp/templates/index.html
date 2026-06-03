@@ -192,24 +192,48 @@ function deflect(x0,L,P,E,I,mode){ if(mode==='axial'||I<=0||E<=0)return 0;
   if(mode==='cantilever')return P*x0*x0*(3*L-x0)/(6*E*I); const x=x0<=L/2?x0:L-x0; return P*x*(3*L*L-4*x*x)/(48*E*I); }
 function disposeTree(o){ o.traverse(n=>{ if(n.geometry)n.geometry.dispose(); if(n.material){(Array.isArray(n.material)?n.material:[n.material]).forEach(m=>m.dispose());} }); }
 
-const stlCache={};
+const stlCache={}; let boneGeo=null;
+function loadBone(cb){
+  if(boneGeo!==null) return cb(boneGeo||undefined);
+  new THREE.STLLoader().load('/bone.stl', g=>{ boneGeo=g; cb(g); }, undefined, ()=>{ boneGeo=false; cb(undefined); });
+}
 function build3D(d){
   if(!renderer) return;
+  const withImplant=impl=> (d.bone_url ? loadBone(b=>buildScene(d,impl,b)) : buildScene(d,impl,undefined));
   if(d.mesh_url){
-    if(stlCache[d.mesh_url]) buildScene(d, stlCache[d.mesh_url]);
-    else new THREE.STLLoader().load(d.mesh_url, geo=>{ stlCache[d.mesh_url]=geo; buildScene(d, geo); },
-      undefined, ()=>buildScene(d, null));
-  } else buildScene(d, null);
+    if(stlCache[d.mesh_url]) withImplant(stlCache[d.mesh_url]);
+    else new THREE.STLLoader().load(d.mesh_url, g=>{ stlCache[d.mesh_url]=g; withImplant(g); }, undefined, ()=>withImplant(undefined));
+  } else withImplant(undefined);
 }
 
-function buildScene(d, stlGeo){
+function buildScene(d, stlGeo, boneRaw){
   if(!renderer) return;
   const g=d.geom, W=g.b, T=g.h, mode='three_point';
   const P=d.case.load_N, E=d.material.E_MPa, yld=d.material.yield_MPa, nScrew=d.from_b.n_screws||4;
   if(world){ scene.remove(world); disposeTree(world); }
   world=new THREE.Group();
 
-  // --- implant geometry: B's real STL (reoriented length->x, thickness->y), else a box ---
+  // --- Split A femur: scale to mm, reorient long-axis -> x, center; else a simple shaft ---
+  let topY, botY, boneLen;
+  if(boneRaw){
+    const bg=boneRaw.clone(); bg.computeBoundingBox(); let s=new THREE.Vector3(); bg.boundingBox.getSize(s);
+    const k=(Math.max(s.x,s.y,s.z)<50)?1000:1; bg.scale(k,k,k);                       // metres -> mm
+    bg.computeBoundingBox(); bg.boundingBox.getSize(s);
+    const e=[s.x,s.y,s.z], iL=e.indexOf(Math.max(...e)), iT=e.indexOf(Math.min(...e)), iW=3-iL-iT;
+    const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iW,1), bz=new THREE.Vector3().setComponent(iT,1);
+    bg.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
+    bg.center(); bg.computeBoundingBox(); bg.boundingBox.getSize(s); boneLen=s.x;
+    const bp=bg.attributes.position; let mx=-1e9, mn=1e9;
+    for(let i=0;i<bp.count;i++){ if(Math.abs(bp.getX(i))<boneLen*0.06){ const y=bp.getY(i); if(y>mx)mx=y; if(y<mn)mn=y; } }
+    topY=(mx>-1e8)?mx:s.y*0.25; botY=(mn<1e8)?mn:-s.y*0.25;
+    world.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, metalness:0.0, side:THREE.DoubleSide})));
+  } else {
+    const R=Math.max(W*0.55,10); topY=R; botY=-R; boneLen=g.L*1.9;
+    const bm=new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, side:THREE.DoubleSide});
+    const c=new THREE.Mesh(new THREE.CylinderGeometry(R,R,boneLen,28),bm); c.rotation.z=Math.PI/2; world.add(c);
+  }
+
+  // --- implant: B's real STL (reoriented length->x, thickness->y), else a box ---
   let geo;
   if(stlGeo){
     geo=stlGeo.clone(); geo.computeBoundingBox();
@@ -218,48 +242,37 @@ function buildScene(d, stlGeo){
     const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iT,1), bz=new THREE.Vector3().setComponent(iW,1);
     geo.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
     geo.center();
-  } else {
-    geo=new THREE.BoxGeometry(g.L,T,W, Math.max(24,Math.round(g.L/2)),3,Math.max(5,Math.round(W/2))).toNonIndexed();
-  }
+  } else { geo=new THREE.BoxGeometry(g.L,T,W, Math.max(24,Math.round(g.L/2)),3,Math.max(5,Math.round(W/2))).toNonIndexed(); }
   geo.computeBoundingBox(); const bs=new THREE.Vector3(); geo.boundingBox.getSize(bs);
   const Lg=bs.x||g.L, Tg=bs.y||T, Ip=W*T*T*T/12;
-
-  // --- bone sized to the plate (two shaft segments + rounded ends), ivory, lit ---
-  const R=Math.max(W*0.55,10), boneLen=Lg*1.9, gap=Math.max(Lg*0.08,6);
-  const boneMat=new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, metalness:0.0});
-  const shaft=(x0,x1)=>{ const c=new THREE.Mesh(new THREE.CylinderGeometry(R,R,x1-x0,28),boneMat); c.rotation.z=Math.PI/2; c.position.x=(x0+x1)/2; return c; };
-  world.add(shaft(-boneLen/2,-gap/2)); world.add(shaft(gap/2,boneLen/2));
-  [-1,1].forEach(si=>{ const ep=new THREE.Mesh(new THREE.SphereGeometry(R*1.5,24,18),boneMat); ep.scale.set(0.8,1,1); ep.position.x=si*boneLen/2; world.add(ep); });
 
   // --- colour + bend the real implant mesh by the stress field ---
   const pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
   for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2, fib=pos.getY(i);
-    const vm=Math.abs(moment(x0,Lg,P,mode)*fib/Ip), c=band(yld>0?vm/yld:0);
-    col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
+    const vm=Math.abs(moment(x0,Lg,P,mode)*fib/Ip), c=band(yld>0?vm/yld:0); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
   let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Ip,mode)));
   const dsc=(maxW>0)?Math.min(0.05*Lg,5)/maxW:0;
   for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Ip,mode)*dsc); }
   pos.needsUpdate=true; geo.setAttribute('color',new THREE.BufferAttribute(col,3));
-  const implant=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true}));
-  implant.position.y=R+Tg/2+0.5; world.add(implant);
-  const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo,35), new THREE.LineBasicMaterial({color:0x33485f}));
-  edge.position.y=implant.position.y; world.add(edge);
+  const plateY=topY+Tg/2+0.5;
+  const implant=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true})); implant.position.y=plateY; world.add(implant);
+  const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo,35), new THREE.LineBasicMaterial({color:0x33485f})); edge.position.y=plateY; world.add(edge);
 
-  // --- screws into bone, skipping the central fracture zone ---
+  // --- screws through the plate into the shaft ---
   const screwMat=new THREE.MeshStandardMaterial({color:0x9aa1aa, roughness:0.4, metalness:0.55});
-  const per=Math.max(1,Math.floor(nScrew/2)), inner=gap/2+Lg*0.12, outer=Lg/2-4;
-  for(let s=0;s<per;s++){ const f=per===1?0.6:s/(per-1), x=inner+(outer-inner)*f;
-    [-1,1].forEach(side=>{ const body=new THREE.Mesh(new THREE.CylinderGeometry(1.7,1.7,Tg+R+4,12),screwMat);
-      body.position.set(side*x, R+Tg-(Tg+R+4)/2+1, 0); world.add(body);
-      const head=new THREE.Mesh(new THREE.CylinderGeometry(2.6,2.6,1.5,12),screwMat);
-      head.position.set(side*x, R+Tg+1.2, 0); world.add(head); }); }
+  const per=Math.max(1,Math.floor(nScrew/2)), inner=Lg*0.16, outer=Lg/2-3, slen=(topY-botY)+Tg+5;
+  for(let sI=0;sI<per;sI++){ const f=per===1?0.6:sI/(per-1), x=inner+(outer-inner)*f;
+    [-1,1].forEach(side=>{ const body=new THREE.Mesh(new THREE.CylinderGeometry(1.6,1.6,slen,12),screwMat);
+      body.position.set(side*x, plateY+Tg/2-slen/2, 0); world.add(body);
+      const head=new THREE.Mesh(new THREE.CylinderGeometry(2.5,2.5,1.4,12),screwMat);
+      head.position.set(side*x, plateY+Tg/2+0.7, 0); world.add(head); }); }
 
   scene.add(world);
-  const dist=boneLen*1.05;
-  camera.position.set(dist*0.16, dist*0.5, dist*0.95);
-  camera.near=dist/200; camera.far=dist*30; camera.updateProjectionMatrix();
-  controls.target.set(0,R*0.4,0); controls.update();
-  $('#tip2').textContent=(stlGeo?'B’s implant mesh · ':'box approximation · ')+'bending exaggerated · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
+  const dist=boneLen*1.08;
+  camera.position.set(dist*0.22, dist*0.42, dist*0.95);
+  camera.near=dist/300; camera.far=dist*40; camera.updateProjectionMatrix();
+  controls.target.set(0, topY*0.2, 0); controls.update();
+  $('#tip2').textContent=(boneRaw?'Split A femur + ':'')+(stlGeo?'B’s implant mesh':'implant')+' · bending exaggerated · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
 }
 
 init3D(); run();
