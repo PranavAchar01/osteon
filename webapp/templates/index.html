@@ -101,7 +101,7 @@
 
   <h2>Stress on the implant — fracture fixation</h2>
   <div class="viewer" id="viewer"><div class="tip2" id="tip2"></div><div class="tip">drag to rotate · scroll to zoom</div></div>
-  <div class="scale"><span>Low stress</span><div class="b" id="bar3d"></div><span>High stress</span></div>
+  <div class="scale"><span id="sc0">0 MPa</span><div class="b" id="bar3d"></div><span id="scMax">limit</span></div>
 
   <h2>How this was calculated</h2>
   <div class="method" id="method"></div>
@@ -152,6 +152,7 @@ function render(d){
   ];
   $('#cards').innerHTML=cards.map(([l,v,cl,s])=>`<div class="card"><div class="l">${l}</div><div class="v ${cl}">${v}</div><div class="s">${s}</div></div>`).join('');
 
+  $('#sc0').textContent='0 MPa'; $('#scMax').textContent=fmt(r.peak_von_mises_MPa)+' MPa (peak)';
   build3D(d);
 
   const steps=[['full_fea','3-D simulation'],['reduced_surrogate','Fast estimate'],['analytic_fallback','Simple formula']];
@@ -247,9 +248,13 @@ function buildScene(d, stlGeo, boneRaw){
   const Lg=bs.x||g.L, Tg=bs.y||T, Ip=W*T*T*T/12;
 
   // --- colour + bend the real implant mesh by the stress field ---
+  // auto-scaled stress map: colour by von Mises relative to THIS implant's own peak,
+  // so the distribution (high mid-span -> low ends) is always visible. Safety vs yield
+  // is shown by the verdict/cards; the colourbar gives the absolute peak in MPa.
   const pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
-  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2, fib=pos.getY(i);
-    const vm=Math.abs(moment(x0,Lg,P,mode)*fib/Ip), c=band(yld>0?vm/yld:0); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
+  const vmArr=new Float32Array(n); let vmMax=1e-9;
+  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; vmArr[i]=Math.abs(moment(x0,Lg,P,mode)*pos.getY(i)/Ip); if(vmArr[i]>vmMax)vmMax=vmArr[i]; }
+  for(let i=0;i<n;i++){ const c=band(vmArr[i]/vmMax); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
   let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Ip,mode)));
   const dsc=(maxW>0)?Math.min(0.05*Lg,5)/maxW:0;
   for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Ip,mode)*dsc); }
@@ -268,11 +273,12 @@ function buildScene(d, stlGeo, boneRaw){
       head.position.set(side*x, plateY+Tg/2+0.7, 0); world.add(head); }); }
 
   scene.add(world);
-  const dist=boneLen*1.08;
-  camera.position.set(dist*0.22, dist*0.42, dist*0.95);
-  camera.near=dist/300; camera.far=dist*40; camera.updateProjectionMatrix();
-  controls.target.set(0, topY*0.2, 0); controls.update();
-  $('#tip2').textContent=(boneRaw?'Split A femur + ':'')+(stlGeo?'B’s implant mesh':'implant')+' · bending exaggerated · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
+  // frame the IMPLANT (the stress map) — not the whole femur — so the stress is visible
+  const view=Math.max(Lg*2.4, 90);
+  camera.position.set(view*0.30, plateY+view*0.34, view*0.92);
+  camera.near=view/400; camera.far=Math.max(boneLen,view)*40; camera.updateProjectionMatrix();
+  controls.target.set(0, plateY, 0); controls.update();
+  $('#tip2').textContent=(boneRaw?'Split A femur + ':'')+(stlGeo?'B’s implant mesh':'implant')+' · stress map · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
 }
 
 init3D(); run();
