@@ -149,13 +149,6 @@
   .bstat{font-size:12.5px;color:var(--mut)}
   #blendPreview img{width:100%;max-width:920px;border:1px solid var(--line);border-radius:var(--r);margin-top:13px;
     display:block;box-shadow:var(--sh)}
-  .method{display:flex;align-items:center;flex-wrap:wrap;gap:0}
-  .step{border:1px solid var(--line);border-radius:8px;padding:10px 16px;font-size:13.5px;font-weight:600;
-    color:var(--mut);background:#fff}
-  .step.on{border-color:var(--blue);color:#fff;background:var(--blue)}
-  .step.off{color:var(--red);border-color:#f3c9c9}
-  .sep{color:var(--mut);padding:0 10px}
-  .note{font-size:13px;color:var(--mut);margin-top:11px;max-width:840px}
 </style>
 </head>
 <body>
@@ -228,9 +221,6 @@
   </div>
   <div id="blendPreview"></div>
 
-  <h2>How this was calculated</h2>
-  <div class="method" id="method"></div>
-  <div class="note" id="methodnote"></div>
   </div>
   </div>
 </div>
@@ -374,17 +364,6 @@ function render(d){
   $('#iLo').textContent='0 MPa'; $('#iHi').textContent=fmt(r.peak_von_mises_MPa)+' MPa (peak)';
   $('#bLo').textContent='0 MPa'; $('#bHi').textContent='130 MPa';
   build3D(d);
-
-  const steps=[['full_fea','3-D simulation'],['reduced_surrogate','Fast estimate'],['analytic_fallback','Simple formula']];
-  const ai=steps.findIndex(s=>s[0]===r.solver_used);
-  if(ai<=0){
-    $('#method').innerHTML='<div class="step on">3-D simulation</div>';
-    $('#methodnote').textContent='Calculated with a full 3-D simulation — the most accurate method. If it ever can’t run, simpler backup methods take over automatically so a result is always produced.';
-  }else{
-    $('#method').innerHTML=steps.map((s,i)=>(i?'<span class="sep">→</span>':'')+
-      `<div class="step ${i===ai?'on':(i<ai?'off':'')}">${s[1]}</div>`).join('');
-    $('#methodnote').textContent=`The 3-D simulation was unavailable, so the ${steps[ai][1]} took over automatically — a valid result is always produced.`;
-  }
 }
 
 // ---------------- 3-D bone + implant scene ----------------
