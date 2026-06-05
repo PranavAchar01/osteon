@@ -8,8 +8,14 @@ Invoked as:
     blender --background --python heatmap_render.py -- \
         <mesh_stl> <data_json> <out_v0_png> <out_v1_png> <out_blend> [bone_stl]
 
-<data_json> = {"vertices": [[x,y,z],...], "rgba": [[r,g,b,a],...],
-               "peak_xyz": [x,y,z], "marker_radius": float}
+<data_json> = {
+    "implant": {"vertices": [[x,y,z],...], "rgba": [[r,g,b,a],...],
+                "peak_xyz": [x,y,z], "marker_radius": float},
+    "bone":    {"vertices": [[x,y,z],...], "rgba": [[r,g,b,a],...], "scale": float}  # optional
+}
+The implant (warm von-Mises colours) and the bone (cool load colours) are two disjoint
+colour systems painted onto the two meshes in one scene. ``scale`` converts the imported
+bone STL (Split A ships it in metres) to mm so it overlays the mm implant.
 """
 
 import json
@@ -26,12 +32,17 @@ def clear_scene():
     bpy.ops.object.delete()
 
 
-def import_stl(path):
+def import_stl(path, scale=1.0):
     if hasattr(bpy.ops.wm, "stl_import"):
         bpy.ops.wm.stl_import(filepath=path)
     else:
         bpy.ops.import_mesh.stl(filepath=path)
-    return bpy.context.selected_objects[0] if bpy.context.selected_objects else bpy.context.object
+    obj = bpy.context.selected_objects[0] if bpy.context.selected_objects else bpy.context.object
+    if scale and scale != 1.0:
+        obj.scale = (scale, scale, scale)
+        bpy.context.view_layer.update()
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return obj
 
 
 def paint_vertex_colors(obj, vertices, rgba):
@@ -128,17 +139,25 @@ def main():
     with open(data_json) as f:
         data = json.load(f)
 
-    clear_scene()
-    # optional bone context (uniform ivory), then the stress-coloured implant on top
-    if bone_path and os.path.exists(bone_path):
-        uniform_color(import_stl(bone_path), (0.82, 0.80, 0.74, 1.0))
-    implant = import_stl(mesh_path)
-    paint_vertex_colors(implant, data["vertices"], data["rgba"])
+    # backward-compatible: old flat schema = the implant layer
+    impl = data.get("implant", data)
+    bone = data.get("bone")
 
-    # peak-stress marker (dark sphere), like Split A's anchor spheres
-    if data.get("peak_xyz"):
-        r = data.get("marker_radius", 2.0)
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=r, location=tuple(data["peak_xyz"]))
+    clear_scene()
+    # bone first (under the plate): paint its OWN cool stress colours, scaled metres -> mm.
+    if bone_path and os.path.exists(bone_path):
+        if bone and bone.get("vertices") and bone.get("rgba"):
+            bobj = import_stl(bone_path, scale=float(bone.get("scale", 1.0)))
+            paint_vertex_colors(bobj, bone["vertices"], bone["rgba"])
+        else:
+            uniform_color(import_stl(bone_path), (0.82, 0.80, 0.74, 1.0))  # ivory context
+    implant = import_stl(mesh_path)
+    paint_vertex_colors(implant, impl["vertices"], impl["rgba"])
+
+    # peak-stress marker (dark sphere) at the implant hot spot, like Split A's anchors
+    if impl.get("peak_xyz"):
+        r = impl.get("marker_radius", 2.0)
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=r, location=tuple(impl["peak_xyz"]))
         uniform_color(bpy.context.object, (0.05, 0.05, 0.05, 1.0))
 
     center, diag = setup_light()

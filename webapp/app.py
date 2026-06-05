@@ -25,13 +25,12 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 from common.contracts import CaseSpec, ImplantCandidate, PlacementPlan
 from common.settings import settings
 from common.trace import LoopTrace
-from implants_gen import THETAS, ensure_implant
 from split_c_evaluation import engine
 from split_c_evaluation.engine import run as evaluate
 
 ROOT = Path(__file__).resolve().parent.parent
 A_FIXTURES = ROOT / "split_a_localization" / "fixtures"
-IMPLANTS = Path(__file__).resolve().parent / "implants"
+B_FIXTURES = ROOT / "split_b_synthesis" / "fixtures"
 app = Flask(__name__)
 
 MATERIALS = {
@@ -128,23 +127,19 @@ def _load_plan(name: str) -> PlacementPlan:
     return PlacementPlan(**json.load(open(p)))
 
 
-def _candidate_for(case_key: str, case_id: str = "implant-eval") -> ImplantCandidate:
-    """Split B's per-patient implant design (distinct geometry + its watertight STL)."""
-    th = THETAS[case_key]
-    stl = ensure_implant(case_key, IMPLANTS)
-    return ImplantCandidate(
-        case_id=case_id,
-        candidate_id=f"{case_key}-implant",
-        iteration=0,
-        parameter_vector=th,
-        mesh_path=str(stl),
-        contacts_anchor_ids=[],
-        volume_mm3=round(th["length_mm"] * th["width_mm"] * th["thickness_mm"] * 0.85, 1),
-        min_thickness_mm=th["thickness_mm"],
-        validity={"watertight": True, "manifold": True, "self_intersect": False},
-        fallback_rung=1,
-        trace_id="",
-    )
+def _load_candidate(name: str, case_id: str) -> ImplantCandidate:
+    """Split B's REAL shipped ImplantCandidate (its frame-placed, Blender-generated STL).
+
+    B's mesh_path is repo-root-relative and the plate is placed in the bone WORLD frame, so
+    we resolve the path absolutely and otherwise pass B's contract through untouched."""
+    p = B_FIXTURES / name
+    if not p.exists():
+        p = ROOT / "fixtures" / "example_implant_candidate.json"
+    cand = ImplantCandidate(**json.load(open(p)))
+    cand.case_id = case_id
+    mp = Path(cand.mesh_path)
+    cand.mesh_path = str(mp if mp.is_absolute() else ROOT / mp)
+    return cand
 
 
 def _stl_path(cand: ImplantCandidate) -> Path:
@@ -186,7 +181,8 @@ def index():
 def mesh(case_id):
     if case_id not in CASES:
         abort(404)
-    path = ensure_implant(case_id, IMPLANTS)
+    cand = _load_candidate(CASES[case_id]["cand"], "mesh")
+    path = Path(cand.mesh_path)
     if not path.exists():
         abort(404)
     return send_file(path, mimetype="model/stl")
@@ -212,7 +208,7 @@ def run():
     mat = MATERIALS[cfg["material"]]
 
     plan = _load_plan(cfg["plan"])
-    candidate = _candidate_for(case_key, plan.case_id)  # Split B's per-patient implant + STL
+    candidate = _load_candidate(cfg["cand"], plan.case_id)  # Split B's REAL frame-placed implant
     trace = LoopTrace(plan.case_id, stage="evaluate")
     candidate.trace_id = trace.trace_id
 
@@ -253,9 +249,10 @@ def run():
         else:
             os.environ.pop("OSTEON_FORCE_FAIL", None)
 
-    g = engine._geometry(candidate)  # geometry MEASURED from B's real STL
+    g = engine._geometry(candidate)  # true plate dims from B's parameter vector (tilt-safe)
     pv = candidate.parameter_vector
     stl_ok = _stl_path(candidate).exists()
+    contacts = list(candidate.contacts_anchor_ids or [])
     return jsonify(
         {
             "patient": {
@@ -271,6 +268,7 @@ def run():
                 "material": cfg["material"],
                 "load_scenario": load_key,
                 "load_N": load_N,
+                "bone_E": cfg["bone_E"],
             },
             "from_a": {
                 "anchors": len(plan.anchor_points),
@@ -286,6 +284,8 @@ def run():
                 "watertight": candidate.validity.get("watertight", False),
                 "stl": stl_ok,
                 "mesh_file": Path(candidate.mesh_path).name,
+                "contacts": len(contacts),
+                "rung": candidate.fallback_rung,
             },
             "report": report.model_dump(),
             "material": {"name": cfg["material"], **mat},
@@ -338,7 +338,8 @@ def _make_case(cfg: dict, plan: PlacementPlan, load_key: str) -> CaseSpec:
 
 
 def _heatmap_paths(case_key: str):
-    stem = ensure_implant(case_key, IMPLANTS).stem  # "c1" ...
+    # the renderer names outputs after B's mesh stem (e.g. implant_candidate_test_case_01)
+    stem = Path(_load_candidate(CASES[case_key]["cand"], "hm").mesh_path).stem
     out = Path(settings.OSTEON_TRACE_DIR).resolve()  # absolute, so send_file works
     return out / f"{stem}_heatmap.png", out / f"{stem}_heatmap.blend"
 
@@ -351,7 +352,7 @@ def heatmap():
     load_key = b.get("load") if b.get("load") in LOADS else "Walking"
     cfg = CASES[case_key]
     plan = _load_plan(cfg["plan"])
-    candidate = _candidate_for(case_key, plan.case_id)
+    candidate = _load_candidate(cfg["cand"], plan.case_id)
     trace = LoopTrace(plan.case_id, stage="evaluate")
     candidate.trace_id = trace.trace_id
     case = _make_case(cfg, plan, load_key)
@@ -366,6 +367,7 @@ def heatmap():
             "peak_mpa": out["peak_mpa"],
             "solver_used": out["solver_used"],
             "blend_name": Path(out["blend_path"]).name,
+            "bone": out.get("bone"),  # bone-load peak + balance score (cool colour system)
         }
     )
 

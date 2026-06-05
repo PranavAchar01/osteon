@@ -32,6 +32,8 @@ DEFAULT_LOAD_N = 700.0  # ~1 body-weight static reference when load_profile is e
 DEFAULT_NU = 0.3  # Poisson's ratio (metal implant)
 DEFAULT_MATERIAL = {"E_MPa": 110000.0, "yield_MPa": 830.0, "endurance_limit_MPa": 510.0}
 I_BONE_REF_mm4 = 16700.0  # representative diaphyseal cortical section (hollow cylinder)
+BONE_C_mm = (4.0 * I_BONE_REF_mm4 / 3.141592653589793) ** 0.25  # ~12.08 mm extreme-fibre radius
+DEFAULT_BONE_YIELD_MPa = 130.0  # cortical bone ultimate (overridable via case.bone_material)
 FOS_PASS = 1.0  # accept if FoS >= 1.0 and fatigue-safe
 BENDING_MODE = "three_point"  # ASTM F382-style 4-pt/3-pt bench bend is the implant standard
 
@@ -40,21 +42,26 @@ BENDING_MODE = "three_point"  # ASTM F382-style 4-pt/3-pt bench bend is the impl
 # Input adapters: turn the contracts into a beam abstraction + loads + material
 # --------------------------------------------------------------------------- #
 def _geometry(cand: ImplantCandidate) -> fea.BeamGeom:
-    """Prefer the real STL bounding box; fall back to the parameter vector, then to
-    volume + min-thickness. Always returns a valid prismatic beam abstraction."""
+    """Prefer Split B's parameter vector (true plate L/W/T), then the STL, then volume.
+
+    B now places the plate in the bone WORLD frame, so it is rotated; its axis-aligned
+    bounding box over-reports the thinnest extent (a ~15° tilt inflated the 6.4 mm
+    thickness to ~13 mm in the shipped fixtures), which would halve the stress. The
+    design parameters are the rotation-invariant truth, so trust them first."""
+    pv = cand.parameter_vector or {}
+    if {"length_mm", "width_mm", "thickness_mm"} <= set(pv):
+        return fea.beam_from_dims(pv["length_mm"], pv["width_mm"], pv["thickness_mm"])
+
     path = cand.mesh_path
     if path and os.path.exists(path):
         try:
             import trimesh
 
-            ext = trimesh.load(path, force="mesh").bounding_box.extents
+            # oriented bbox is rotation-invariant — correct even for a placed/tilted plate
+            ext = trimesh.load(path, force="mesh").bounding_box_oriented.extents
             return fea.beam_from_dims(float(ext[0]), float(ext[1]), float(ext[2]))
         except Exception:
-            pass  # fall through to parametric
-
-    pv = cand.parameter_vector or {}
-    if {"length_mm", "width_mm", "thickness_mm"} <= set(pv):
-        return fea.beam_from_dims(pv["length_mm"], pv["width_mm"], pv["thickness_mm"])
+            pass  # fall through to volume estimate
 
     # last resort: a plate of thickness = min_thickness with a square footprint
     t = max(cand.min_thickness_mm or 2.0, 0.5)
@@ -282,18 +289,29 @@ run = with_fallback([_rung1, _rung2], _floor)
 # The field shape follows the bending solution; its peak is scaled to the StressReport
 # peak from the SAME solve, so the picture and the numbers agree (heatmap §10.4).
 # --------------------------------------------------------------------------- #
+def _principal_axes(verts):
+    """Return (centroid, long-axis unit vec, thinnest-axis unit vec) via PCA — so the
+    field is correct even when B places the plate rotated into the bone world frame."""
+    import numpy as np
+
+    c = verts.mean(0)
+    w, V = np.linalg.eigh(np.cov((verts - c).T))
+    order = np.argsort(w)  # ascending eigenvalue: [thinnest, mid, longest]
+    return c, V[:, order[-1]], V[:, order[0]]
+
+
 def _field_arrays(cand, case, mode):
     import numpy as np
     import trimesh
 
     verts = np.asarray(trimesh.load(cand.mesh_path, force="mesh").vertices, dtype=float)
-    ext = verts.max(0) - verts.min(0)
-    i_len, i_thk = int(np.argmax(ext)), int(np.argmin(ext))
-    L = float(ext[i_len])
+    c, axis_long, axis_thin = _principal_axes(verts)
+    s_long = (verts - c) @ axis_long
+    s_thin = (verts - c) @ axis_thin
+    L = float(s_long.max() - s_long.min())
     P, _c = _load_N(case)
-    x0 = verts[:, i_len] - verts[:, i_len].min()
-    mid = (verts[:, i_thk].max() + verts[:, i_thk].min()) / 2.0
-    fib = verts[:, i_thk] - mid
+    x0 = s_long - s_long.min()
+    fib = s_thin - (s_thin.max() + s_thin.min()) / 2.0  # signed extreme-fibre distance
     raw = np.abs(fea.bending_moment(x0, L, P, mode) * fib)  # proportional to sigma_vM
     return verts, raw
 
@@ -313,25 +331,142 @@ def stress_field(cand, case, mode=BENDING_MODE):
     return _build_field(cand, case, mode, rep.peak_von_mises_MPa)
 
 
+def _resolve_bone_path(case) -> str:
+    """Absolute path to the bone STL (case.bone_mesh_path), resolved against the repo root."""
+    bp = getattr(case, "bone_mesh_path", "") or ""
+    if not bp:
+        return ""
+    if os.path.isabs(bp) and os.path.exists(bp):
+        return bp
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cand = os.path.join(root, bp)
+    if os.path.exists(cand):
+        return cand
+    return bp if os.path.exists(bp) else ""
+
+
+def bone_stress_field(cand, case, bone_path, plan=None, mode=BENDING_MODE):
+    """Per-vertex BONE load field (MPa) painted on the bone mesh — the *dual* of the
+    implant field, on its OWN [0, bone_yield] scale and colour system (§ stress heat-map).
+
+    Composite-beam load sharing (the same EI terms as ``_shielding``): under the plate the
+    bone is stress-shielded to a fraction phi = EI_bone/(EI_bone+EI_implant) of its intact
+    bending stress; at the plate ends and screw holes a local Kt riser concentrates load.
+    An EVEN balance of pressure (the goal) <=> a flat field <=> balance score near 100.
+
+    Returns a dict (vertices + field aligned to the bone STL vertex order) or ``None`` —
+    never raises, so the heat-map path degrades gracefully like the floor rung."""
+    import numpy as np
+    import trimesh
+
+    try:
+        bv = np.asarray(trimesh.load(bone_path, force="mesh").vertices, dtype=float)
+        ext = bv.max(0) - bv.min(0)
+        scale = 1000.0 if float(ext.max()) < 50.0 else 1.0  # Split A bone is in metres
+        bv = bv * scale
+        c, axis_long, _thin = _principal_axes(bv)
+        s_bone = (bv - c) @ axis_long
+        s_min, s_max = float(s_bone.min()), float(s_bone.max())
+
+        # plate footprint + screw stations projected onto the SAME bone long axis
+        iv = np.asarray(trimesh.load(cand.mesh_path, force="mesh").vertices, dtype=float)
+        s_impl = (iv - c) @ axis_long
+        plate_span = (float(s_impl.min()), float(s_impl.max()))
+
+        screw_s: list[float] = []
+        ids = list(getattr(cand, "contacts_anchor_ids", []) or [])
+        if plan is not None and ids:
+            by_id = {a.id: a for a in (plan.anchor_points or [])}
+            for aid in ids:
+                a = by_id.get(aid)
+                if a is not None:
+                    p = np.array([a.xyz.x, a.xyz.y, a.xyz.z], dtype=float)
+                    screw_s.append(float((p - c) @ axis_long))
+        n = int((cand.parameter_vector or {}).get("n_screws", 4))
+        if not screw_s:  # synthetic stations so end/screw risers still render
+            p0, p1 = plate_span
+            screw_s = list(np.linspace(p0 + 0.08 * (p1 - p0), p1 - 0.08 * (p1 - p0), max(n, 2)))
+
+        P, _c = _load_N(case)
+        E_impl, _y, _e = _material(case)
+        geom = _geometry(cand)
+        E_bone = float((case.bone_material or {}).get("E_cortical_MPa", 17000.0))
+        ei_bone = E_bone * I_BONE_REF_mm4
+        ei_impl = E_impl * geom.I_max
+        phi = ei_bone / (ei_bone + ei_impl) if (ei_bone + ei_impl) > 0 else 1.0
+        bone_yield = float((case.bone_material or {}).get("yield_MPa", DEFAULT_BONE_YIELD_MPa))
+        z_bone = I_BONE_REF_mm4 / BONE_C_mm
+        d_screw = float((cand.parameter_vector or {}).get("hole_d_mm", 3.5))
+        screw_kt = max(fea.stress_concentration_factor_hole(d_screw, 2.0 * BONE_C_mm), 1.2)
+
+        field = fea.bone_axial_field(
+            s_bone, s_min, s_max, P, z_bone, plate_span, screw_s, phi,
+            mode=mode, end_kt=1.8, screw_kt=screw_kt,
+        )
+        field = np.clip(np.asarray(field, dtype=float), 0.0, bone_yield)
+        if not np.all(np.isfinite(field)):
+            field = np.full(len(bv), bone_yield * phi)
+
+        under = (s_bone >= plate_span[0]) & (s_bone <= plate_span[1])
+        span_vals = field[under] if bool(under.any()) else field
+        mean = float(np.mean(span_vals))
+        cv = float(np.std(span_vals) / mean) if mean > 1e-9 else 0.0
+        balance = float(min(max(1.0 - cv, 0.0), 1.0))
+        return {
+            "vertices": bv.tolist(),
+            "field": field.tolist(),
+            "scale": scale,
+            "bone_yield": round(bone_yield, 1),
+            "peak": round(float(np.max(field)), 2),
+            "mean": round(mean, 2),
+            "cv": round(cv, 4),
+            "balance": round(balance * 100.0, 1),
+            "phi": round(float(phi), 4),
+            "plate_span": [round(plate_span[0], 1), round(plate_span[1], 1)],
+            "n_screws": len(screw_s),
+        }
+    except Exception:
+        return None  # bone map is best-effort; the implant map still renders
+
+
 def render_heatmap(cand, case, trace=None, mode=BENDING_MODE):
-    """Solve once, build the field, render the Blender heat map, and log the artifact
-    under the case's trace (no contract change, §8). Returns the tool output + report."""
+    """Solve once, build the implant + bone fields, render the Blender heat map, and log
+    the artifact under the case's trace (no contract change, §8). Returns tool output +
+    report (+ a ``bone`` summary with the load-balance score)."""
     from .mcp_server import render_stress_heatmap
 
     trace = trace or LoopTrace(cand.case_id, stage="evaluate")
     rep = run({"candidate": cand, "case": case, "mode": mode}, trace)
     field = _build_field(cand, case, mode, rep.peak_von_mises_MPa)
     _e, yld, _en = _material(case)
+
+    bone_path = _resolve_bone_path(case)
+    bone = bone_stress_field(cand, case, bone_path, mode=mode) if bone_path else None
+
     out = render_stress_heatmap(
-        cand.mesh_path, field, yld, "", rep.solver_used, rep.factor_of_safety
+        cand.mesh_path,
+        field,
+        yld,
+        bone_path,
+        rep.solver_used,
+        rep.factor_of_safety,
+        bone_vertices=(bone or {}).get("vertices"),
+        bone_field=(bone or {}).get("field"),
+        bone_yield_mpa=(bone or {}).get("bone_yield", DEFAULT_BONE_YIELD_MPa),
+        bone_scale=(bone or {}).get("scale", 1.0),
     )
     trace.emit(
         span="evaluate:heatmap",
         heatmap_png=out["png_path"],
         heatmap_blend=out["blend_path"],
         peak_mpa=out["peak_mpa"],
+        bone_balance=(bone or {}).get("balance"),
     )
-    return {**out, "solver_used": rep.solver_used, "report": rep.model_dump()}
+    res = {**out, "solver_used": rep.solver_used, "report": rep.model_dump()}
+    if bone:
+        res["bone"] = {k: bone[k] for k in (
+            "peak", "mean", "balance", "cv", "phi", "bone_yield", "plate_span", "n_screws")}
+    return res
 
 
 # --------------------------------------------------------------------------- #

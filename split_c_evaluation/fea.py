@@ -125,6 +125,51 @@ def shielding_index(strain_energy_intact: float, strain_energy_implanted: float)
     return float(min(max(strain_energy_implanted / strain_energy_intact, 0.0), 1.0))
 
 
+def bone_axial_field(
+    s,
+    s_min: float,
+    s_max: float,
+    P: float,
+    Z_bone: float,
+    plate_span: tuple,
+    screw_s,
+    shield_fraction: float,
+    mode: str = "three_point",
+    end_kt: float = 1.8,
+    screw_kt: float = 2.2,
+    riser_mm: float = 8.0,
+):
+    """Axial BONE bending-stress field (MPa) along the bone long axis once a stiff plate
+    is bolted on — the load the bone itself still carries (a different quantity from the
+    implant's von Mises stress, hence its own colour system and [0, bone_yield] scale).
+
+    Physics (composite-beam load sharing + St-Venant stress risers):
+      * intact bone bending stress  sigma0(s) = |M(s)| / Z_bone
+      * UNDER the plate the bone is stress-shielded — it carries only ``shield_fraction``
+        of sigma0 (Wolff's-law concern: too little load weakens bone), where
+        shield_fraction = EI_bone / (EI_bone + EI_implant).
+      * at the PLATE ENDS (load hand-off) and at each SCREW HOLE, a local Gaussian stress
+        riser concentrates the full intact stress by Kt — the spots that actually fail.
+
+    An EVEN balance of pressure (the design goal) ⇒ a flat field ⇒ low coefficient of
+    variation. Returns the per-sample field aligned to ``s``."""
+    s = np.asarray(s, dtype=float)
+    L = max(float(s_max) - float(s_min), 1e-6)
+    x = np.clip(s - float(s_min), 0.0, L)
+    sigma0 = np.abs(bending_moment(x, L, P, mode)) / max(float(Z_bone), 1e-6)
+
+    p0, p1 = float(plate_span[0]), float(plate_span[1])
+    under = (s >= p0) & (s <= p1)
+    sigma = np.where(under, sigma0 * float(shield_fraction), sigma0)
+
+    risers = list(screw_s) + [p0, p1]
+    kts = [float(screw_kt)] * len(list(screw_s)) + [float(end_kt), float(end_kt)]
+    for sc, kt in zip(risers, kts):
+        bump = np.exp(-0.5 * ((s - sc) / max(riser_mm, 1e-6)) ** 2)
+        sigma = np.maximum(sigma, sigma0 * kt * bump)  # riser pulls local stress back up
+    return sigma
+
+
 # --------------------------------------------------------------------------- #
 # Reduced surrogate  (RUNG 2) — 1D Euler-Bernoulli beam FE, pure numpy
 # --------------------------------------------------------------------------- #
