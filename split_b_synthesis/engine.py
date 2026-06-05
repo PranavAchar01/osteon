@@ -79,20 +79,49 @@ def clamp_theta(theta: dict) -> dict:
     return clamped
 
 
+def _placement_center(plan: PlacementPlan) -> np.ndarray:
+    """Body center: defect_region.centroid if populated, else the anchor centroid."""
+    defect = plan.defect_region or {}
+    if isinstance(defect, dict) and defect.get("volume_mm3", 0):
+        c = defect["centroid"]
+        return np.array([c["x"], c["y"], c["z"]], dtype=np.float64)
+    pts = np.array([[a.xyz.x, a.xyz.y, a.xyz.z] for a in plan.anchor_points], dtype=np.float64)
+    return pts.mean(axis=0) if len(pts) else np.zeros(3)
+
+
+def _frame_basis(plan: PlacementPlan) -> np.ndarray:
+    basis = np.asarray(plan.coordinate_frame.get("basis"), dtype=np.float64)
+    return basis if basis.shape == (3, 3) else np.eye(3)
+
+
+def _placement(plan: PlacementPlan):
+    """(anchors_json, frame_json) telling generate_mesh where on the bone the implant goes."""
+    center = _placement_center(plan)
+    anchors = [json.loads(a.model_dump_json()) for a in plan.anchor_points]
+    frame = {
+        "origin": {"x": float(center[0]), "y": float(center[1]), "z": float(center[2])},
+        "basis": _frame_basis(plan).tolist(),
+    }
+    return anchors, frame
+
+
 def seed_theta(plan: PlacementPlan) -> dict:
-    """Seed a plate from plan geometry: anchor span -> length, cortical -> thickness."""
+    """Seed the plate from REAL plan geometry in the plan's coordinate frame, recomputed per
+    patient: length spans the anchors along the bone long axis, width across them, thickness from
+    cortical thickness, one screw per anchor. Always clamped to THETA_BOUNDS."""
     theta = dict(DEFAULT_THETA)
     anchors = plan.anchor_points
     if len(anchors) >= 2:
-        points = np.array([[a.xyz.x, a.xyz.y, a.xyz.z] for a in anchors], dtype=np.float64)
-        span = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
-        if span > 0:
-            theta["length_mm"] = span
+        center = _placement_center(plan)
+        world = np.array([[a.xyz.x, a.xyz.y, a.xyz.z] for a in anchors], dtype=np.float64)
+        local = (_frame_basis(plan) @ (world - center).T).T
+        theta["length_mm"] = float(local[:, 2].max() - local[:, 2].min()) + 20.0
+        theta["width_mm"] = float(local[:, 0].max() - local[:, 0].min()) + 10.0
         theta["n_screws"] = len(anchors)
-        cortical = [a.cortical_thickness_mm for a in anchors if a.cortical_thickness_mm > 0]
+        cortical = [a.cortical_thickness_mm for a in anchors if 0 < a.cortical_thickness_mm < 50]
         if cortical:
-            theta["thickness_mm"] = min(cortical)
-        theta["screw_spacing_mm"] = theta["length_mm"] / max(1, theta["n_screws"] - 1)
+            theta["thickness_mm"] = float(np.median(cortical))
+        theta["screw_spacing_mm"] = theta["length_mm"] / max(1, len(anchors) - 1)
     return clamp_theta(theta)
 
 
@@ -199,11 +228,24 @@ def _candidate(plan, iteration, theta, mesh_path, validity, rung) -> ImplantCand
 
 
 def _make_candidate(plan, iteration, theta, rung) -> ImplantCandidate:
-    """Generate geometry for a clamped theta, assemble the candidate, run the post guardrail."""
-    result = generate_mesh(theta)  # ToolFailError on failure -> ladder advances
-    candidate = _candidate(plan, iteration, theta, result["mesh_path"], result["validity"], rung)
+    """Place the implant onto the bone and assemble the candidate. Plate geometry (length, width,
+    screw count/spacing) follows the real anchor layout; the controller's theta supplies thickness
+    and contour. Runs the post-invoke validity guardrail before returning."""
+    geo = seed_theta(plan)
+    placed = clamp_theta(
+        {
+            **theta,
+            "length_mm": geo["length_mm"],
+            "width_mm": geo["width_mm"],
+            "n_screws": geo["n_screws"],
+            "screw_spacing_mm": geo["screw_spacing_mm"],
+        }
+    )
+    anchors, frame = _placement(plan)
+    result = generate_mesh(placed, anchors, frame)  # frame-driven placement onto the bone
+    candidate = _candidate(plan, iteration, placed, result["mesh_path"], result["validity"], rung)
     mesh_validity_check(candidate)  # post-invoke guardrail; RejectedOutput -> ladder advances
-    _LAST_GOOD[plan.case_id] = dict(theta)
+    _LAST_GOOD[plan.case_id] = dict(placed)
     return candidate
 
 
