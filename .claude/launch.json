@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "osteon-web",
+      "runtimeExecutable": "/Users/sahielbose/osteon/.venv/bin/python",
+      "runtimeArgs": ["/Users/sahielbose/osteon/webapp/app.py"],
+      "port": 5001
+    }
+  ]
+}

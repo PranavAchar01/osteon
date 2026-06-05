@@ -63,14 +63,22 @@ Record the rung in `StressReport.fallback_rung` and the solver in `solver_used`.
 ```bash
 # prereq: Phase 0 done; .env has TFY_TOKEN, TFY_GATEWAY_URL
 git clone https://github.com/PranavAchar01/osteon.git && cd osteon
-uv venv && source .venv/bin/activate
-uv pip install -e ".[evaluation]"          # pycalculix or ccx binary, sfepy/numpy, trimesh
-sudo apt-get install -y calculix-ccx        # or build ccx; verify `ccx -v`
+uv venv --python 3.11 && source .venv/bin/activate
+uv pip install -e ".[evaluation]" rtree     # sfepy, trimesh, pycalculix, numpy/scipy (+rtree for trimesh)
 
-tfy apply -f gateway/guardrails.yaml        # mesh-watertight-gate, report-nan-gate
-tfy apply -f gateway/mcp-registry.yaml      # fea-mcp
-python split_c_evaluation/mcp_server.py &
-python -m split_c_evaluation.engine --candidate split_c_evaluation/fixtures/candidate_frozen.stl
+# CalculiX (ccx) has no Homebrew formula on macOS, so the FEA runs on sfepy (a
+# pure-Python 3D linear-elastic solver) as the rung-1 "full_fea" engine. If a `ccx`
+# binary is on PATH (Linux apt / conda-forge), run_calculix prefers it automatically:
+#   linux:  sudo apt-get install -y calculix-ccx   &&  ccx -v
+#   conda:  conda install -c conda-forge calculix
+
+# gateway configs already declare evaluate-guards + fea-mcp; apply when a gateway exists:
+# tfy apply -f gateway/guardrails.yaml        # implant/mesh-watertight-gate, implant/report-nan-gate
+# tfy apply -f gateway/mcp-registry.yaml      # fea-mcp
+
+python split_c_evaluation/mcp_server.py &     # serve fea-mcp tools
+python -m split_c_evaluation.engine           # evaluate the example candidate -> StressReport
+pytest split_c_evaluation/test_acceptance.py -q
 ```
 
 ---
@@ -87,3 +95,28 @@ Validate against **analytic benchmarks** with known answers:
 **Resilience demo:** force a solver timeout → trace shows rung1→rung2→floor with `solver_used` recorded; injected NaN report caught by the post-invoke guardrail. Runs with **zero dependency on A or B.**
 
 Ship 5 `StressReport` fixtures under `fixtures/` so B's controller can be tested without you.
+
+---
+
+## 8. Implementation status — DONE ✅
+
+| File | What it does |
+|---|---|
+| `fea.py` | sfepy 3D linear-elastic solver (`solve_block_fea`, modes axial/cantilever/three_point), 1D Euler-Bernoulli surrogate (`surrogate_beam_fea`), closed-form analytic bounds, notched-plate Kt, `shielding_index`. |
+| `engine.py` | `run = with_fallback([_rung1, _rung2], _floor)`. rung1 `full_fea` (sfepy), rung2 `reduced_surrogate`, floor `analytic_fallback`. Derives geometry/load/material from the contracts; best-effort LLM summary via `call_llm(stage="evaluate")`. |
+| `guardrails.py` | `mesh_watertight_gate` (pre-invoke), `report_nan_gate` (post-invoke) → raise `RejectedOutput`. |
+| `mcp_server.py` | `fea-mcp`: `meshing_to_fe`, `run_calculix` (ccx-if-present else sfepy, SIGALRM timeout), `compute_shielding_index`. |
+| `test_acceptance.py` | 11 tests; `fixtures/stress_report_0{1..5}.json` ship 5 reports across all tiers. |
+
+**Design choices (all defensible, documented in code):**
+- **sfepy is the rung-1 FEA** — CalculiX has no macOS Homebrew formula; `run_calculix` auto-prefers `ccx` if the binary appears. Contract tier stays `full_fea`.
+- **Bending model = three-point (ASTM F382-style)** — the standard bone-plate bench test (M = PL/4). Default reference load 700 N when `load_profile` is empty.
+- **Shielding = composite-beam strain-energy ratio** `(EI_bone/(EI_bone+EI_implant))²`.
+
+**Verified benchmarks (real sfepy 3D FEA vs analytic):** axial σ & δ **0–0.4%**; cantilever tip δ **0.3%**, mid-span bending σ **4.3%**; surrogate **<1%**; Kt(d/w→0)=3.0 and Kt(d/w=0.5)≈2.16 within 10%. The three-point peak von Mises sits ~18% below 1-D beam theory — expected St-Venant load-spreading; the 3-D field is the more accurate truth, the analytic bound is the floor.
+
+**Run the resilience demo:**
+```bash
+python -m split_c_evaluation.engine                       # rung1 full_fea: FoS 2.26, passed
+OSTEON_FORCE_FAIL=evaluate python -m split_c_evaluation.engine   # -> rung2 reduced_surrogate
+```

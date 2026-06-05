@@ -17,4 +17,4 @@ servers:
   - name: fea-mcp
     mode: aggregator
     command: python split_c_evaluation/mcp_server.py
-    tools: [meshing_to_fe, run_calculix, compute_shielding_index]
+    tools: [meshing_to_fe, run_calculix, compute_shielding_index, render_stress_heatmap]
