@@ -3,22 +3,22 @@
   "candidate_id": "cand-0",
   "iteration": 0,
   "parameter_vector": {
-    "length_mm": 67.17513385694829,
-    "width_mm": 29.99498216813463,
-    "thickness_mm": 6.375163257248409,
+    "length_mm": 200.0,
+    "width_mm": 30.0,
+    "thickness_mm": 6.37193343614178,
     "n_screws": 4,
-    "screw_spacing_mm": 30.391057190559394,
-    "contour_offset_mm": 1.943900214109702
+    "screw_spacing_mm": 40.0,
+    "contour_offset_mm": 0.6716576043360141
   },
   "mesh_path": "split_b_synthesis/fixtures/implant_candidate_test_case_01.stl",
   "contacts_anchor_ids": [],
-  "volume_mm3": 11420.288815456122,
-  "min_thickness_mm": 6.375163257248409,
+  "volume_mm3": 38203.43847627287,
+  "min_thickness_mm": 6.37193343614178,
   "validity": {
     "watertight": true,
     "manifold": true,
     "self_intersect": false
   },
   "fallback_rung": 2,
-  "trace_id": "8483ff58642c4325936a9769290bcda5"
+  "trace_id": "0fef25369265441f9445b9a24e280116"
 }

@@ -86,3 +86,70 @@ Against a **frozen `PlacementPlan`** fixture and a **mock analytic stress oracle
 **Resilience demo:** (a) feed an out-of-bounds θ → pre-invoke guardrail blocks it, no Blender call; (b) kill the LLM → CMA-ES takes over and still converges (shown in trace). Runs with **zero dependency on A's live code or C.**
 
 Ship 5 `ImplantCandidate` fixtures (STL + JSON) under `fixtures/` so C can build without you.
+
+---
+
+## 8. Implementation notes & offline runbook (Day 1–2)
+
+**θ — plate parametrization** (`parameter_vector`, all mm except `n_screws`). `THETA_BOUNDS` in
+`engine.py` is the single source of truth (bounds guardrail + CMA-ES search space):
+
+| param | bounds | | param | bounds |
+|---|---|---|---|---|
+| `length_mm` | 40–200 | | `n_screws` | 2–12 |
+| `width_mm` | 8–30 | | `screw_spacing_mm` | 8–40 |
+| `thickness_mm` | 2–8 | | `contour_offset_mm` | 0–5 |
+
+`THETA_BOUNDS` is intentionally **static**: the frozen `synthesize` input is `{plan, report,
+iteration}`, so `CaseSpec.constraints` (`min_thickness_mm`, `max_volume_mm3`) never reach Split B.
+
+**Ladder** — `with_fallback([_rung1, _rung2], _floor)`:
+- **rung 1** — LLM θ-proposer via `call_llm(stage="synthesize", model="bedrock/claude-sonnet")`;
+  gateway fallback **`bedrock/mistral-large`** (in `gateway/routing.yaml`). Bad JSON / out-of-bounds
+  θ / model outage → `RetryableError` / `RejectedOutput` → ladder advances.
+- **rung 2** — CMA-ES (`cma`) over `THETA_BOUNDS`, no LLM. Optimizes against an injected stress
+  oracle (tests) or a built-in analytic beam-bending proxy (live/offline). `fallback_rung=2`.
+- **floor** — last-known-good θ + `parameter_vector["_stop"]=True`; guaranteed-watertight solid
+  plate; never raises.
+
+**Geometry (offline, no bpy):** trimesh builds the plate + screw cylinders; **pymeshlab/CGAL** cuts
+the holes (trimesh's own boolean needs `manifold3d` or the Blender binary). `validity.self_intersect`
+is an `is_volume` proxy. `contacts_anchor_ids` come from `check_contacts` (<1 mm) — empty on Split A's
+current stub anchors (~388 mm off the plate), an A-stub artifact, not a bug.
+
+**Guardrails** (mirror the gateway `synthesize-guards` so they fire offline): `theta_bounds_check`
+(pre-invoke, before `generate_mesh`) and `mesh_validity_check` (post-invoke, before returning to C).
+
+> **Gateway TODO (one person, in the TrueFoundry UI):** create the `implant/theta-bounds-check` and
+> `implant/mesh-validity-check` guardrail *integrations* so the existing `synthesize-guards` rule in
+> `gateway/guardrails.yaml` resolves. No YAML edit required.
+
+**Offline commands** (no creds, no Blender):
+```bash
+uv pip install -e ".[dev,localization,synthesis]"
+pytest -q split_b_synthesis/test_acceptance.py    # convergence + 2 injected failures + trace
+python -m split_b_synthesis.engine                # regenerate the 5 fixtures (rung 2 offline)
+```
+
+---
+
+## 9. Coordinate-frame placement (integration — the implant goes ONTO the bone)
+
+The implant is modeled INTO the PlacementPlan frame and recomputed per patient (nothing static):
+- **Position:** body centered at `defect_region.centroid` if populated, else the **anchor centroid**.
+- **Orientation:** long axis along `coordinate_frame.basis` +Z (bone long axis); X = width, Y = thickness.
+- **Size:** `seed_theta` spans the anchors in the local frame (length along +Z, width across) and takes
+  thickness from `cortical_thickness_mm`, all clamped to `THETA_BOUNDS`. The controller (LLM/CMA) tunes
+  **thickness**; plate length/width/screw layout follow the anatomy.
+- **Screws:** a hole is drilled at each on-plate anchor (axis along the anchor normal), then the finished
+  plate is rigid-transformed **local → world** so the STL overlays the bone mesh.
+- **Contacts:** `contacts_anchor_ids` come from the real `check_contacts` (<1 mm) on the world-frame mesh.
+
+**Units / overlay:** anchors and the implant STL are in **mm**; A's `dummy_bone.stl` is in **meters** —
+scale the bone ×1000 (A's pipeline already does) to overlay the implant in the same frame.
+
+**On A's current fixtures:** the 4 anchors are scattered ~15–110 mm around the 3-D shaft (not a coplanar
+fracture line), so a single flat bounded plate contacts only the anchors that land on it (e.g. test_case_02
+→ a0, a3; the others none). Placement itself is correct and per-patient — proven by
+`test_placement_is_frame_driven_not_static` (two frames, every screw < 1 mm). Full screws-at-all-anchors
+needs clustered fracture-line anchors from A, or a curved surface-conform plate (future work).

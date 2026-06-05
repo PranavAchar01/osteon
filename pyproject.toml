@@ -13,10 +13,11 @@ dependencies = [
 
 [project.optional-dependencies]
 # bpy is not reliably pip-installable; Split B uses the Blender binary (blender --background).
-localization = ["open3d", "trimesh", "scikit-learn", "torch", "pydicom"]
+# rtree backs trimesh's ray/proximity spatial index (Split A thickness probing, engine.py).
+localization = ["open3d", "trimesh", "scikit-learn", "torch", "pydicom", "rtree"]
 synthesis = ["trimesh", "pymeshlab", "cma"]
 evaluation = ["trimesh", "sfepy", "pycalculix"]
-dev = ["pytest", "ruff", "black"]
+dev = ["pytest", "ruff", "black", "scikit-image"]  # scikit-image: scripts/make_femur.py fixture generation
 
 [tool.black]
 line-length = 100
