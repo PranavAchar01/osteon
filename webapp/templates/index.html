@@ -12,12 +12,14 @@
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <style>
   :root{
-    --navy:#0e294d; --blue:#2563eb; --blue-d:#1d4ed8; --soft:#eaf1fe; --ink:#101f33; --mut:#647389;
-    --line:#e7ecf3; --bg:#f4f7fb; --card:#ffffff; --red:#dc2626; --amber:#b45309; --good:#1f6feb;
-    --sh:0 1px 2px rgba(16,31,51,.06), 0 6px 22px rgba(16,31,51,.05);
-    --r:12px;
+    /* monochrome theme — colour lives ONLY in the stress map + its legends.
+       red is kept strictly as a functional danger signal (NOT-SAFE / at-risk). */
+    --navy:#0a0a0a; --blue:#111111; --blue-d:#000000; --soft:#ededed; --ink:#0a0a0a; --mut:#6b6b6b;
+    --line:#d4d4d4; --bg:#f4f4f4; --card:#ffffff; --red:#b00020; --amber:#444444; --good:#0a0a0a;
+    --sh:none;
+    --r:0px;
   }
-  *{box-sizing:border-box}
+  *{box-sizing:border-box;border-radius:0 !important}  /* no rounded corners anywhere */
   html,body{margin:0;background:var(--bg);color:var(--ink);
     font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
@@ -72,6 +74,13 @@
   .pchip{margin-left:auto;padding:8px 16px;border-radius:999px;font-size:13px;font-weight:700;letter-spacing:.3px}
   .pchip.ok{background:var(--soft);color:var(--blue)} .pchip.no{background:#fdeaea;color:var(--red)}
 
+  .pipe{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 16px;font-size:12px}
+  .pipe .st{border:1px solid var(--line);padding:6px 11px;font-weight:600;color:var(--ink);background:#fff}
+  .pipe .st .r{color:var(--mut);font-weight:500}
+  .pipe .ar{color:var(--mut);font-weight:700}
+  .pipe .badge{margin-left:auto;border:1px solid var(--ink);background:var(--ink);color:#fff;
+    padding:5px 11px;font-weight:700;letter-spacing:.4px}
+  .pipe .badge.fx{background:#fff;color:var(--ink)}
   .from{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
   .src{border:1px solid var(--line);border-radius:var(--r);padding:15px 18px;background:var(--card);box-shadow:var(--sh)}
   .src .h{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--blue)}
@@ -175,6 +184,8 @@
 
   <div class="verdict" id="verdict"><div class="tag" id="vtag">—</div><p id="vmsg"></p><div class="ctx" id="vctx"></div></div>
 
+  <div class="pipe" id="pipe"></div>
+
   <div class="cards" id="cards"></div>
 
   <h2>Stress map — implant &amp; bone</h2>
@@ -221,7 +232,7 @@ document.getElementById('ham').addEventListener('click',()=>document.querySelect
 let seq=0;
 async function run(){
   const my=++seq;
-  $('#status').textContent='calculating…';
+  $('#status').textContent='running A→B→C…';
   resetBlend();
   try{
     const res=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -255,6 +266,18 @@ function render(d){
     msg+=` But it is much stiffer than the bone — the bone keeps only ${Math.round(r.stress_shielding_index*100)}% of its natural load (stress shielding), which can weaken it over time.`;
   $('#vmsg').textContent=msg;
   $('#vctx').textContent=`${c.bone} · ${c.defect.toLowerCase()} · ${matShort} · ${c.load_scenario} (${fmt(c.load_N)} N)`;
+
+  // pipeline resilience strip — which rung fired at each stage, live vs fixture fallback
+  const rg=d.rungs||{}, iters=d.iterations||1;
+  const RUNGNAME={localize:{1:'ML landmarks',2:'geometric',floor:'default frame'},
+    synthesize:{1:'LLM proposer',2:'optimizer',floor:'last-known-good'},
+    evaluate:{1:'3-D FEA',2:'fast estimate',floor:'formula'}};
+  const rn=k=>(RUNGNAME[k]&&RUNGNAME[k][rg[k]])||('rung '+rg[k]);
+  const st=(name,k)=>`<span class="st">${name} <span class="r">${rn(k)}</span></span>`;
+  $('#pipe').innerHTML = st('A · localize','localize')+'<span class="ar">→</span>'+
+    st('B · synthesize','synthesize')+'<span class="ar">→</span>'+st('C · evaluate','evaluate')+
+    `<span class="ar">·</span><span class="st">${iters} iteration${iters>1?'s':''}</span>`+
+    `<span class="badge ${d.live?'':'fx'}">${d.live?'LIVE  A→B→C':'FIXTURE + C'}</span>`;
 
   const cards=[
     ['Safety margin', fmt(r.factor_of_safety,1)+'×', safe?'yes':'no','safe at 1× or above'],
@@ -425,7 +448,7 @@ function buildScene(d, stlGeo, boneRaw){
   if(restY<-1e8) restY=topY;
   const plateY=restY+Tg/2+0.4;
   const implant=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true})); implant.position.set(0,plateY,cz); world.add(implant);
-  const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo,35), new THREE.LineBasicMaterial({color:0x33485f})); edge.position.set(0,plateY,cz); world.add(edge);
+  const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo,35), new THREE.LineBasicMaterial({color:0x222222})); edge.position.set(0,plateY,cz); world.add(edge);
 
   // --- screws: each runs from the plate down THROUGH its hole INTO the bone surface below ---
   const screwMat=new THREE.MeshStandardMaterial({color:0x9aa1aa, roughness:0.4, metalness:0.55});

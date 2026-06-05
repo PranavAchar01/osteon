@@ -1,36 +1,44 @@
-"""Osteon — Split C dashboard.
+"""Osteon — end-to-end dashboard (Split A → B → C).
 
-Split C is the evaluator. It receives the OUTPUT of the upstream pipeline:
-  • a PlacementPlan from Split A   (anchors + fit-target bone surface), and
-  • an ImplantCandidate from Split B (a path to a watertight STL mesh + parametric theta),
-together with the system CaseSpec, and produces a StressReport.
+This server drives the WHOLE resilient pipeline from a CaseSpec, exactly as
+``orchestrator.design_implant`` does:
 
-This server loads Split A's and Split B's shipped fixtures (B's real Blender-generated
-implant STLs), runs the real Split C engine on them, and serves the actual STL to the
-browser so the 3-D view shows B's true geometry — not a procedural stand-in.
+  CaseSpec → Split A localize → PlacementPlan → Split B synthesize → ImplantCandidate
+           → Split C evaluate → StressReport   (B↔C feedback until it passes)
+
+It runs the real engines (each with its 3-rung fallback ladder), shows which rung fired
+at every stage, serves B's actual placed STL, and renders the dual implant+bone stress
+heat-map. The run is cached per (case, load, failure) and, true to the resilience theme,
+falls back to the shipped A/B fixtures if a live stage is unavailable.
 
 Run:  cd osteon && source .venv/bin/activate && python webapp/app.py  -> http://127.0.0.1:5001
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import numpy as np
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
 from common.contracts import CaseSpec, ImplantCandidate, PlacementPlan
 from common.settings import settings
 from common.trace import LoopTrace
+from split_a_localization.engine import run as localize
+from split_b_synthesis.engine import run as synthesize
 from split_c_evaluation import engine
 from split_c_evaluation.engine import run as evaluate
 
 ROOT = Path(__file__).resolve().parent.parent
 A_FIXTURES = ROOT / "split_a_localization" / "fixtures"
 B_FIXTURES = ROOT / "split_b_synthesis" / "fixtures"
+os.chdir(ROOT)  # so every split's relative mesh/trace path resolves regardless of launch cwd
+MAX_ITERS = 5
 app = Flask(__name__)
 
 MATERIALS = {
@@ -160,6 +168,126 @@ def _read_spans(trace_id: str) -> list[dict]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# Full pipeline: build a CaseSpec and run Split A → B ↔ C end to end.
+# --------------------------------------------------------------------------- #
+def _build_case(case_key: str, load_key: str) -> CaseSpec:
+    """The system input. Absolute bone path so every split's trimesh.load resolves."""
+    cfg = CASES[case_key]
+    mat = MATERIALS[cfg["material"]]
+    load_N = LOADS.get(load_key, 700)
+    bone = str((ROOT / "fixtures" / "dummy_bone.stl").resolve())
+    return CaseSpec(
+        case_id=case_key,
+        bone_mesh_path=bone,
+        bone_material={"E_cortical_MPa": cfg["bone_E"], "E_trabecular_MPa": 1000, "density": 1.9},
+        defect={"type": "fracture", "region": "diaphysis", "severity": "moderate",
+                "description": cfg["defect"]},
+        load_profile=[{"name": load_key, "force_vector_N": {"x": 0, "y": 0, "z": load_N},
+                       "application_region": "mid-diaphysis", "cycles": 1_000_000}],
+        implant_material={"name": cfg["material"], **mat},
+        constraints={"process": "additive"},
+    )
+
+
+def _abs_mesh(path: str) -> str:
+    if not path:
+        return path
+    p = Path(path)
+    return str(p if p.is_absolute() else (ROOT / p))
+
+
+def _design(case: CaseSpec, fail: str) -> dict:
+    """Run A → (B ↔ C) live, like orchestrator.design_implant, but capture the rung that
+    fired at every stage + the iteration count and honour the failure-injection toggle.
+    The ladder floors never raise, so this returns a valid result for any input."""
+    seed = int(hashlib.md5(case.case_id.encode()).hexdigest(), 16) % (2**32)
+    np.random.seed(seed)  # process-independent → reproducible anchors across restarts
+    trace = LoopTrace(case.case_id, stage="design")
+    prev = os.environ.get("OSTEON_FORCE_FAIL")
+    if fail and fail != "none":
+        os.environ["OSTEON_FORCE_FAIL"] = fail
+    else:
+        os.environ.pop("OSTEON_FORCE_FAIL", None)
+    try:
+        plan = localize(case, trace.child("localize"))
+        report = None
+        cand = None
+        iters = 0
+        for i in range(MAX_ITERS):
+            iters = i + 1
+            cand = synthesize({"plan": plan, "report": report, "iteration": i},
+                              trace.child("synthesize"))
+            report = evaluate({"candidate": cand, "case": case, "mode": "three_point"},
+                              trace.child("evaluate"))
+            if report.passed or (cand.parameter_vector or {}).get("_stop") or cand.fallback_rung == "floor":
+                break
+    finally:
+        if prev is not None:
+            os.environ["OSTEON_FORCE_FAIL"] = prev
+        else:
+            os.environ.pop("OSTEON_FORCE_FAIL", None)
+    cand.mesh_path = _abs_mesh(cand.mesh_path)
+    return {
+        "plan": plan, "cand": cand, "report": report, "iters": iters,
+        "trace_id": trace.trace_id, "live": True,
+        "rungs": {"localize": plan.fallback_rung, "synthesize": cand.fallback_rung,
+                  "evaluate": report.fallback_rung},
+    }
+
+
+def _design_from_fixtures(case_key: str, load_key: str, fail: str) -> dict:
+    """Resilience fallback: if a live stage is unavailable, evaluate the shipped A+B
+    fixtures with Split C so the dashboard still produces a valid result."""
+    cfg = CASES[case_key]
+    plan = _load_plan(cfg["plan"])
+    cand = _load_candidate(cfg["cand"], plan.case_id)
+    case = _build_case(case_key, load_key)
+    trace = LoopTrace(plan.case_id, stage="evaluate")
+    cand.trace_id = trace.trace_id
+    prev = os.environ.get("OSTEON_FORCE_FAIL")
+    if fail and fail != "none":
+        os.environ["OSTEON_FORCE_FAIL"] = fail
+    else:
+        os.environ.pop("OSTEON_FORCE_FAIL", None)
+    try:
+        report = evaluate({"candidate": cand, "case": case, "mode": "three_point"},
+                          trace.child("evaluate"))
+    finally:
+        if prev is not None:
+            os.environ["OSTEON_FORCE_FAIL"] = prev
+        else:
+            os.environ.pop("OSTEON_FORCE_FAIL", None)
+    return {
+        "plan": plan, "cand": cand, "report": report, "iters": 1,
+        "trace_id": trace.trace_id, "live": False,
+        "rungs": {"localize": plan.fallback_rung, "synthesize": cand.fallback_rung,
+                  "evaluate": report.fallback_rung},
+    }
+
+
+_PIPELINE_CACHE: dict = {}
+_LAST_CAND: dict = {}  # case_key -> absolute STL path of the most recent candidate (for /mesh)
+
+
+def _pipeline(case_key: str, load_key: str, fail: str) -> dict:
+    """Cached full-pipeline run; live A→B→C with a fixture fallback (never raises)."""
+    key = (case_key, load_key, fail)
+    if key not in _PIPELINE_CACHE:
+        case = _build_case(case_key, load_key)
+        try:
+            res = _design(case, fail)
+            if not (res["cand"].mesh_path and Path(res["cand"].mesh_path).exists()):
+                raise RuntimeError("live candidate mesh missing")
+        except Exception:
+            res = _design_from_fixtures(case_key, load_key, fail)
+        res["case"] = _build_case(case_key, load_key)
+        _PIPELINE_CACHE[key] = res
+    res = _PIPELINE_CACHE[key]
+    _LAST_CAND[case_key] = _abs_mesh(res["cand"].mesh_path)
+    return res
+
+
 @app.route("/")
 def index():
     patients = []
@@ -181,9 +309,11 @@ def index():
 def mesh(case_id):
     if case_id not in CASES:
         abort(404)
-    cand = _load_candidate(CASES[case_id]["cand"], "mesh")
-    path = Path(cand.mesh_path)
-    if not path.exists():
+    # the most recent live candidate for this case; else the shipped B fixture
+    path = _LAST_CAND.get(case_id)
+    if not path or not Path(path).exists():
+        path = _abs_mesh(_load_candidate(CASES[case_id]["cand"], "mesh").mesh_path)
+    if not path or not Path(path).exists():
         abort(404)
     return send_file(path, mimetype="model/stl")
 
@@ -207,51 +337,12 @@ def run():
     fail = b.get("fail_mode") if b.get("fail_mode") in FAIL_MODES else "none"
     mat = MATERIALS[cfg["material"]]
 
-    plan = _load_plan(cfg["plan"])
-    candidate = _load_candidate(cfg["cand"], plan.case_id)  # Split B's REAL frame-placed implant
-    trace = LoopTrace(plan.case_id, stage="evaluate")
-    candidate.trace_id = trace.trace_id
-
-    case = CaseSpec(
-        case_id=plan.case_id,
-        bone_mesh_path=plan.fit_target_surface_path,
-        bone_material={"E_cortical_MPa": cfg["bone_E"], "E_trabecular_MPa": 1000, "density": 1.9},
-        defect={
-            "type": "fracture",
-            "region": "diaphysis",
-            "severity": "moderate",
-            "description": cfg["defect"],
-        },
-        load_profile=[
-            {
-                "name": load_key,
-                "force_vector_N": {"x": 0, "y": 0, "z": load_N},
-                "application_region": "mid-diaphysis",
-                "cycles": 1_000_000,
-            }
-        ],
-        implant_material={"name": cfg["material"], **mat},
-        constraints={"process": "additive"},
-    )
-
-    prev = os.environ.get("OSTEON_FORCE_FAIL")
-    if fail != "none":
-        os.environ["OSTEON_FORCE_FAIL"] = fail
-    else:
-        os.environ.pop("OSTEON_FORCE_FAIL", None)
-    try:
-        report = evaluate(
-            {"candidate": candidate, "case": case, "mode": "three_point"}, trace.child("evaluate")
-        )
-    finally:
-        if prev is not None:
-            os.environ["OSTEON_FORCE_FAIL"] = prev
-        else:
-            os.environ.pop("OSTEON_FORCE_FAIL", None)
+    res = _pipeline(case_key, load_key, fail)  # live A → B ↔ C (cached), fixture fallback
+    plan, candidate, report = res["plan"], res["cand"], res["report"]
 
     g = engine._geometry(candidate)  # true plate dims from B's parameter vector (tilt-safe)
-    pv = candidate.parameter_vector
-    stl_ok = _stl_path(candidate).exists()
+    pv = candidate.parameter_vector or {}
+    stl_ok = bool(candidate.mesh_path and Path(candidate.mesh_path).exists())
     contacts = list(candidate.contacts_anchor_ids or [])
     return jsonify(
         {
@@ -270,10 +361,14 @@ def run():
                 "load_N": load_N,
                 "bone_E": cfg["bone_E"],
             },
+            "live": res["live"],
+            "iterations": res["iters"],
+            "rungs": res["rungs"],
             "from_a": {
                 "anchors": len(plan.anchor_points),
                 "confidence": round(plan.confidence, 2),
                 "fit_target": Path(plan.fit_target_surface_path).name,
+                "rung": plan.fallback_rung,
             },
             "from_b": {
                 "length_mm": round(g.L, 1),
@@ -298,7 +393,7 @@ def run():
             },
             "mesh_url": f"/mesh/{case_key}.stl" if stl_ok else None,
             "bone_url": "/bone.stl" if (ROOT / "fixtures" / "dummy_bone.stl").exists() else None,
-            "spans": _read_spans(report.trace_id),
+            "spans": _read_spans(res["trace_id"]),
         }
     )
 
@@ -311,53 +406,29 @@ def _blender_bin() -> str:
     )
 
 
-def _make_case(cfg: dict, plan: PlacementPlan, load_key: str) -> CaseSpec:
-    mat = MATERIALS[cfg["material"]]
-    load_N = LOADS.get(load_key, 700)
-    return CaseSpec(
-        case_id=plan.case_id,
-        bone_mesh_path=plan.fit_target_surface_path,
-        bone_material={"E_cortical_MPa": cfg["bone_E"], "E_trabecular_MPa": 1000, "density": 1.9},
-        defect={
-            "type": "fracture",
-            "region": "diaphysis",
-            "severity": "moderate",
-            "description": cfg["defect"],
-        },
-        load_profile=[
-            {
-                "name": load_key,
-                "force_vector_N": {"x": 0, "y": 0, "z": load_N},
-                "application_region": "mid-diaphysis",
-                "cycles": 1_000_000,
-            }
-        ],
-        implant_material={"name": cfg["material"], **mat},
-        constraints={"process": "additive"},
-    )
-
-
 def _heatmap_paths(case_key: str):
-    # the renderer names outputs after B's mesh stem (e.g. implant_candidate_test_case_01)
-    stem = Path(_load_candidate(CASES[case_key]["cand"], "hm").mesh_path).stem
+    # the renderer names outputs after the candidate mesh stem (live or fixture)
+    mp = _LAST_CAND.get(case_key) or _abs_mesh(
+        _load_candidate(CASES[case_key]["cand"], "hm").mesh_path
+    )
+    stem = Path(mp).stem
     out = Path(settings.OSTEON_TRACE_DIR).resolve()  # absolute, so send_file works
     return out / f"{stem}_heatmap.png", out / f"{stem}_heatmap.blend"
 
 
 @app.route("/api/heatmap", methods=["POST"])
 def heatmap():
-    """Render the Blender stress model (PNG + .blend) for the selected case."""
+    """Render the dual implant+bone Blender stress model (PNG + .blend) for the case,
+    using the SAME candidate the pipeline produced + A's real plan for the bone field."""
     b = request.get_json(force=True, silent=True) or {}
     case_key = b.get("case") if b.get("case") in CASES else next(iter(CASES))
     load_key = b.get("load") if b.get("load") in LOADS else "Walking"
-    cfg = CASES[case_key]
-    plan = _load_plan(cfg["plan"])
-    candidate = _load_candidate(cfg["cand"], plan.case_id)
-    trace = LoopTrace(plan.case_id, stage="evaluate")
+    res = _pipeline(case_key, load_key, "none")  # nominal candidate for the picture
+    candidate, case, plan = res["cand"], res["case"], res["plan"]
+    trace = LoopTrace(case.case_id, stage="evaluate")
     candidate.trace_id = trace.trace_id
-    case = _make_case(cfg, plan, load_key)
     try:
-        out = engine.render_heatmap(candidate, case, trace)  # -> PNG + .blend under traces/
+        out = engine.render_heatmap(candidate, case, trace, plan=plan)  # PNG + .blend
     except Exception as exc:  # never 500 the UI
         return jsonify({"error": str(exc)[:200]}), 200
     return jsonify(

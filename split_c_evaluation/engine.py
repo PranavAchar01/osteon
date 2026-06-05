@@ -429,10 +429,11 @@ def bone_stress_field(cand, case, bone_path, plan=None, mode=BENDING_MODE):
         return None  # bone map is best-effort; the implant map still renders
 
 
-def render_heatmap(cand, case, trace=None, mode=BENDING_MODE):
+def render_heatmap(cand, case, trace=None, mode=BENDING_MODE, plan=None):
     """Solve once, build the implant + bone fields, render the Blender heat map, and log
     the artifact under the case's trace (no contract change, §8). Returns tool output +
-    report (+ a ``bone`` summary with the load-balance score)."""
+    report (+ a ``bone`` summary with the load-balance score). When a PlacementPlan is
+    supplied, the bone field's screw stations come from A's real anchors."""
     from .mcp_server import render_stress_heatmap
 
     trace = trace or LoopTrace(cand.case_id, stage="evaluate")
@@ -441,7 +442,7 @@ def render_heatmap(cand, case, trace=None, mode=BENDING_MODE):
     _e, yld, _en = _material(case)
 
     bone_path = _resolve_bone_path(case)
-    bone = bone_stress_field(cand, case, bone_path, mode=mode) if bone_path else None
+    bone = bone_stress_field(cand, case, bone_path, plan=plan, mode=mode) if bone_path else None
 
     out = render_stress_heatmap(
         cand.mesh_path,
