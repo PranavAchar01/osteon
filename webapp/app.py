@@ -26,11 +26,15 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
+import trimesh
+
+import split_b_synthesis.engine as b_engine
 from common.contracts import CaseSpec, ImplantCandidate, PlacementPlan
 from common.settings import settings
 from common.trace import LoopTrace
 from split_a_localization.engine import run as localize
 from split_b_synthesis.engine import run as synthesize
+from split_b_synthesis.mcp_server import generate_mesh as b_generate_mesh
 from split_c_evaluation import engine
 from split_c_evaluation.engine import run as evaluate
 
@@ -197,6 +201,57 @@ def _abs_mesh(path: str) -> str:
     return str(p if p.is_absolute() else (ROOT / p))
 
 
+def _placement_json(plan: PlacementPlan):
+    """Replicate Split B's placement inputs (anchors + bone-frame) from the plan, so we can
+    re-mesh a resized plate onto the same anchors without reaching into B's internals."""
+    anchors = [json.loads(a.model_dump_json()) for a in plan.anchor_points]
+    pts = [(a.xyz.x, a.xyz.y, a.xyz.z) for a in plan.anchor_points]
+    if pts:
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        cz = sum(p[2] for p in pts) / len(pts)
+    else:
+        cx = cy = cz = 0.0
+    basis = (plan.coordinate_frame or {}).get("basis") or [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    return anchors, {"origin": {"x": cx, "y": cy, "z": cz}, "basis": basis}
+
+
+def _rightsize(plan: PlacementPlan, cand: ImplantCandidate, case: CaseSpec) -> ImplantCandidate:
+    """Size the plate THICKNESS to the thinnest value meeting the FoS target for this
+    patient's load — the standard implant-design calc (3-point bending: peak = 1.5·P·L/(w·t²),
+    so t = √(1.5·P·L·FoS_target/(w·yield))) — then re-place + re-mesh via Split B's tool.
+
+    This closes the design loop with the patient's actual load: heavier loads / weaker
+    materials get a thicker plate, lighter ones a thinner plate, so the implant is genuinely
+    different per patient instead of B's load-blind default. Falls back to B's mesh on error."""
+    pv = dict(cand.parameter_vector or {})
+    if pv.get("_stop") or cand.fallback_rung == "floor":
+        return cand  # floor candidate — leave it untouched
+    length = float(pv.get("length_mm", 96.0))
+    width = float(pv.get("width_mm", 14.0))
+    P, _cycles = engine._load_N(case)
+    _e, yld, _en = engine._material(case)
+    fos_target = 1.6
+    t_req = (1.5 * P * length * fos_target / (max(width, 1.0) * max(yld, 1.0))) ** 0.5
+    t_req = min(max(t_req, 2.0), 8.0)  # THETA_BOUNDS thickness window
+    if abs(t_req - float(pv.get("thickness_mm", 0.0))) < 0.25:
+        return cand  # already sized correctly
+    pv["thickness_mm"] = t_req
+    try:
+        anchors, frame = _placement_json(plan)
+        res = b_generate_mesh(b_engine.clamp_theta(pv), anchors, frame)
+        mp = _abs_mesh(res["mesh_path"])
+        vol = float(abs(trimesh.load(mp, force="mesh").volume))  # read first → no partial update
+        cand.parameter_vector = b_engine.clamp_theta(pv)
+        cand.mesh_path = mp
+        cand.validity = res["validity"]
+        cand.min_thickness_mm = float(t_req)
+        cand.volume_mm3 = vol
+    except Exception:
+        pass  # keep B's original candidate if the re-mesh fails
+    return cand
+
+
 def _design(case: CaseSpec, fail: str) -> dict:
     """Run A → (B ↔ C) live, like orchestrator.design_implant, but capture the rung that
     fired at every stage + the iteration count and honour the failure-injection toggle.
@@ -222,6 +277,10 @@ def _design(case: CaseSpec, fail: str) -> dict:
                               trace.child("evaluate"))
             if report.passed or (cand.parameter_vector or {}).get("_stop") or cand.fallback_rung == "floor":
                 break
+        # size the plate to THIS patient's load, then re-evaluate the resized implant
+        cand = _rightsize(plan, cand, case)
+        report = evaluate({"candidate": cand, "case": case, "mode": "three_point"},
+                          trace.child("evaluate"))
     finally:
         if prev is not None:
             os.environ["OSTEON_FORCE_FAIL"] = prev
@@ -267,7 +326,15 @@ def _design_from_fixtures(case_key: str, load_key: str, fail: str) -> dict:
 
 
 _PIPELINE_CACHE: dict = {}
-_LAST_CAND: dict = {}  # case_key -> absolute STL path of the most recent candidate (for /mesh)
+_LAST_CAND: dict = {}  # case id -> absolute STL path of the most recent candidate (for /mesh)
+_LAST_RESULT: dict = {}  # case id -> full pipeline result (for /api/heatmap on any id)
+
+
+def _remember(case_key: str, res: dict) -> dict:
+    """Record the most recent result for a case id so /mesh + /api/heatmap can find it."""
+    _LAST_CAND[case_key] = _abs_mesh(res["cand"].mesh_path)
+    _LAST_RESULT[case_key] = res
+    return res
 
 
 def _pipeline(case_key: str, load_key: str, fail: str) -> dict:
@@ -283,9 +350,7 @@ def _pipeline(case_key: str, load_key: str, fail: str) -> dict:
             res = _design_from_fixtures(case_key, load_key, fail)
         res["case"] = _build_case(case_key, load_key)
         _PIPELINE_CACHE[key] = res
-    res = _PIPELINE_CACHE[key]
-    _LAST_CAND[case_key] = _abs_mesh(res["cand"].mesh_path)
-    return res
+    return _remember(case_key, _PIPELINE_CACHE[key])
 
 
 @app.route("/")
@@ -302,16 +367,17 @@ def index():
                 "site": f'{p["side"]} {cfg["bone"].lower()} · {cfg["material"].split(" (")[0]}',
             }
         )
-    return render_template("index.html", patients=patients, loads=list(LOADS.keys()))
+    return render_template(
+        "index.html", patients=patients, loads=list(LOADS.keys()),
+        materials=list(MATERIALS.keys()),
+    )
 
 
 @app.route("/mesh/<case_id>.stl")
 def mesh(case_id):
-    if case_id not in CASES:
-        abort(404)
-    # the most recent live candidate for this case; else the shipped B fixture
+    # the most recent live candidate for this id (preset OR custom); else the B fixture
     path = _LAST_CAND.get(case_id)
-    if not path or not Path(path).exists():
+    if (not path or not Path(path).exists()) and case_id in CASES:
         path = _abs_mesh(_load_candidate(CASES[case_id]["cand"], "mesh").mesh_path)
     if not path or not Path(path).exists():
         abort(404)
@@ -327,75 +393,140 @@ def bone():
     return send_file(p, mimetype="model/stl")
 
 
+def _response(case_key: str, meta: dict, res: dict) -> dict:
+    """Build the dashboard payload from a pipeline result + display metadata (used by both
+    the preset /api/run and the live /api/design)."""
+    plan, candidate, report = res["plan"], res["cand"], res["report"]
+    g = engine._geometry(candidate)  # true plate dims from B's parameter vector (tilt-safe)
+    pv = candidate.parameter_vector or {}
+    stl_ok = bool(candidate.mesh_path and Path(candidate.mesh_path).exists())
+    contacts = list(candidate.contacts_anchor_ids or [])
+    mat = MATERIALS.get(meta["material"], next(iter(MATERIALS.values())))
+    return {
+        "patient": meta["patient"],
+        "case": {
+            "label": meta["label"], "bone": meta["bone"], "defect": meta["defect"],
+            "material": meta["material"], "load_scenario": meta["load_scenario"],
+            "load_N": meta["load_N"], "bone_E": meta["bone_E"],
+        },
+        "live": res["live"],
+        "iterations": res["iters"],
+        "rungs": res["rungs"],
+        "from_a": {
+            "anchors": len(plan.anchor_points),
+            "confidence": round(plan.confidence, 2),
+            "fit_target": Path(plan.fit_target_surface_path).name,
+            "rung": plan.fallback_rung,
+        },
+        "from_b": {
+            "length_mm": round(g.L, 1),
+            "width_mm": round(g.b, 1),
+            "thickness_mm": round(g.h, 1),
+            "n_screws": pv.get("n_screws", 4),
+            "volume_mm3": round(candidate.volume_mm3, 0),
+            "watertight": candidate.validity.get("watertight", False),
+            "stl": stl_ok,
+            "mesh_file": Path(candidate.mesh_path).name,
+            "contacts": len(contacts),
+            "rung": candidate.fallback_rung,
+        },
+        "report": report.model_dump(),
+        "material": {"name": meta["material"], **mat},
+        "geom": {
+            "L": round(g.L, 1), "b": round(g.b, 1), "h": round(g.h, 1),
+            "I_mm4": round(g.I, 1), "Z_mm3": round(g.section_modulus, 1),
+        },
+        # ?v=<mesh stem> busts the browser STL cache when the implant geometry changes
+        # (e.g. re-running the same patient at a heavier load resizes the plate)
+        "mesh_url": (f"/mesh/{case_key}.stl?v={Path(candidate.mesh_path).stem}" if stl_ok else None),
+        "bone_url": "/bone.stl" if (ROOT / "fixtures" / "dummy_bone.stl").exists() else None,
+        "spans": _read_spans(res["trace_id"]),
+    }
+
+
 @app.route("/api/run", methods=["POST"])
 def run():
     b = request.get_json(force=True, silent=True) or {}
     case_key = b.get("case") if b.get("case") in CASES else next(iter(CASES))
     cfg = CASES[case_key]
     load_key = b.get("load") if b.get("load") in LOADS else "Walking"
-    load_N = LOADS[load_key]
     fail = b.get("fail_mode") if b.get("fail_mode") in FAIL_MODES else "none"
-    mat = MATERIALS[cfg["material"]]
 
     res = _pipeline(case_key, load_key, fail)  # live A → B ↔ C (cached), fixture fallback
-    plan, candidate, report = res["plan"], res["cand"], res["report"]
+    meta = {
+        "label": cfg["label"], "bone": cfg["bone"], "defect": cfg["defect"],
+        "material": cfg["material"], "load_scenario": load_key, "load_N": LOADS[load_key],
+        "bone_E": cfg["bone_E"],
+        "patient": {**PATIENTS.get(case_key, {}), "bone": cfg["bone"],
+                    "defect": cfg["defect"], "date": "2026-06-03"},
+    }
+    return jsonify(_response(case_key, meta, res))
 
-    g = engine._geometry(candidate)  # true plate dims from B's parameter vector (tilt-safe)
-    pv = candidate.parameter_vector or {}
-    stl_ok = bool(candidate.mesh_path and Path(candidate.mesh_path).exists())
-    contacts = list(candidate.contacts_anchor_ids or [])
-    return jsonify(
-        {
-            "patient": {
-                **PATIENTS.get(case_key, {}),
-                "bone": cfg["bone"],
-                "defect": cfg["defect"],
-                "date": "2026-06-03",
-            },
-            "case": {
-                "label": cfg["label"],
-                "bone": cfg["bone"],
-                "defect": cfg["defect"],
-                "material": cfg["material"],
-                "load_scenario": load_key,
-                "load_N": load_N,
-                "bone_E": cfg["bone_E"],
-            },
-            "live": res["live"],
-            "iterations": res["iters"],
-            "rungs": res["rungs"],
-            "from_a": {
-                "anchors": len(plan.anchor_points),
-                "confidence": round(plan.confidence, 2),
-                "fit_target": Path(plan.fit_target_surface_path).name,
-                "rung": plan.fallback_rung,
-            },
-            "from_b": {
-                "length_mm": round(g.L, 1),
-                "width_mm": round(g.b, 1),
-                "thickness_mm": round(g.h, 1),
-                "n_screws": pv.get("n_screws", 4),
-                "volume_mm3": round(candidate.volume_mm3, 0),
-                "watertight": candidate.validity.get("watertight", False),
-                "stl": stl_ok,
-                "mesh_file": Path(candidate.mesh_path).name,
-                "contacts": len(contacts),
-                "rung": candidate.fallback_rung,
-            },
-            "report": report.model_dump(),
-            "material": {"name": cfg["material"], **mat},
-            "geom": {
-                "L": round(g.L, 1),
-                "b": round(g.b, 1),
-                "h": round(g.h, 1),
-                "I_mm4": round(g.I, 1),
-                "Z_mm3": round(g.section_modulus, 1),
-            },
-            "mesh_url": f"/mesh/{case_key}.stl" if stl_ok else None,
-            "bone_url": "/bone.stl" if (ROOT / "fixtures" / "dummy_bone.stl").exists() else None,
-            "spans": _read_spans(res["trace_id"]),
-        }
+
+@app.route("/api/design", methods=["POST"])
+def design():
+    """Create a NEW patient/case from form fields and run the full A→B↔C pipeline LIVE.
+
+    The bone scan is the shared fixture femur; everything else (material, load, bone
+    stiffness, defect) is custom, computed in real time. Cached per (id, load, failure)."""
+    b = request.get_json(force=True, silent=True) or {}
+    name = (str(b.get("name") or "New Patient").strip() or "New Patient")[:60]
+    bone = b.get("bone") if b.get("bone") in ("Tibia", "Femur") else "Femur"
+    material = b.get("material") if b.get("material") in MATERIALS else next(iter(MATERIALS))
+    defect = (str(b.get("defect") or "Transverse mid-shaft fracture").strip())[:140]
+    load_key = b.get("load") if b.get("load") in LOADS else "Walking"
+    fail = b.get("fail_mode") if b.get("fail_mode") in FAIL_MODES else "none"
+    cid = (str(b.get("cid") or "")[:48] or "custom-x")
+    if not cid.startswith("custom-"):
+        cid = "custom-" + cid
+    try:
+        bone_E = min(max(float(b.get("bone_E") or 17000), 1000.0), 30000.0)
+    except (TypeError, ValueError):
+        bone_E = 17000.0
+
+    mat = MATERIALS[material]
+    load_N = LOADS[load_key]
+    case = CaseSpec(
+        case_id=cid,
+        bone_mesh_path=str((ROOT / "fixtures" / "dummy_bone.stl").resolve()),
+        bone_material={"E_cortical_MPa": bone_E, "E_trabecular_MPa": 1000, "density": 1.9},
+        defect={"type": "fracture", "region": "diaphysis", "severity": "moderate",
+                "description": defect},
+        load_profile=[{"name": load_key, "force_vector_N": {"x": 0, "y": 0, "z": load_N},
+                       "application_region": "mid-diaphysis", "cycles": 1_000_000}],
+        implant_material={"name": material, **mat},
+        constraints={"process": "additive"},
     )
+
+    key = (cid, load_key, fail, round(bone_E), material)
+    if key not in _PIPELINE_CACHE:
+        try:
+            res = _design(case, fail)
+            if not (res["cand"].mesh_path and Path(res["cand"].mesh_path).exists()):
+                raise RuntimeError("live candidate mesh missing")
+        except Exception as exc:
+            return jsonify({"error": f"pipeline failed: {str(exc)[:160]}"}), 200
+        res["case"] = case
+        _PIPELINE_CACHE[key] = res
+    res = _remember(cid, _PIPELINE_CACHE[key])
+
+    initials = ("".join(w[0] for w in name.split()[:2]).upper() or "NP")[:2]
+    age, sex, side = b.get("age") or "—", b.get("sex") or "", b.get("side") or "—"
+    meta = {
+        "label": f"{bone} fracture — {material.split(' (')[0]}",
+        "bone": bone, "defect": defect, "material": material,
+        "load_scenario": load_key, "load_N": load_N, "bone_E": bone_E,
+        "patient": {"name": name, "age": age, "sex": sex, "mrn": "OST-" + cid[-5:].upper(),
+                    "side": side, "procedure": "ORIF — custom plan", "bone": bone,
+                    "defect": defect, "date": "2026-06-05"},
+    }
+    out = _response(cid, meta, res)
+    out["new_patient"] = {
+        "id": cid, "name": name, "initials": initials,
+        "demo": f"{age} {sex}".strip(),
+        "site": f"{bone.lower()} · {material.split(' (')[0]}",
+    }
+    return jsonify(out)
 
 
 def _blender_bin() -> str:
@@ -407,10 +538,12 @@ def _blender_bin() -> str:
 
 
 def _heatmap_paths(case_key: str):
-    # the renderer names outputs after the candidate mesh stem (live or fixture)
-    mp = _LAST_CAND.get(case_key) or _abs_mesh(
-        _load_candidate(CASES[case_key]["cand"], "hm").mesh_path
-    )
+    # the renderer names outputs after the candidate mesh stem (live, custom, or fixture)
+    mp = _LAST_CAND.get(case_key)
+    if not mp and case_key in CASES:
+        mp = _abs_mesh(_load_candidate(CASES[case_key]["cand"], "hm").mesh_path)
+    if not mp:
+        return None, None
     stem = Path(mp).stem
     out = Path(settings.OSTEON_TRACE_DIR).resolve()  # absolute, so send_file works
     return out / f"{stem}_heatmap.png", out / f"{stem}_heatmap.blend"
@@ -419,11 +552,17 @@ def _heatmap_paths(case_key: str):
 @app.route("/api/heatmap", methods=["POST"])
 def heatmap():
     """Render the dual implant+bone Blender stress model (PNG + .blend) for the case,
-    using the SAME candidate the pipeline produced + A's real plan for the bone field."""
+    using the SAME candidate the pipeline produced + A's real plan for the bone field.
+    Works for both preset cases and live custom patients."""
     b = request.get_json(force=True, silent=True) or {}
-    case_key = b.get("case") if b.get("case") in CASES else next(iter(CASES))
+    case_key = b.get("case") or next(iter(CASES))
     load_key = b.get("load") if b.get("load") in LOADS else "Walking"
-    res = _pipeline(case_key, load_key, "none")  # nominal candidate for the picture
+    res = _LAST_RESULT.get(case_key)
+    if res is None:
+        if case_key in CASES:
+            res = _pipeline(case_key, load_key, "none")
+        else:
+            return jsonify({"error": "run this case first"}), 200
     candidate, case, plan = res["cand"], res["case"], res["plan"]
     trace = LoopTrace(case.case_id, stage="evaluate")
     candidate.trace_id = trace.trace_id
@@ -445,20 +584,16 @@ def heatmap():
 
 @app.route("/heatmap/<case_id>.png")
 def heatmap_png(case_id):
-    if case_id not in CASES:
-        abort(404)
     png, _ = _heatmap_paths(case_id)
-    if not png.exists():
+    if not png or not png.exists():
         abort(404)
     return send_file(png, mimetype="image/png")
 
 
 @app.route("/heatmap/<case_id>.blend")
 def heatmap_blend(case_id):
-    if case_id not in CASES:
-        abort(404)
     _, blend = _heatmap_paths(case_id)
-    if not blend.exists():
+    if not blend or not blend.exists():
         abort(404)
     return send_file(
         blend,
@@ -472,9 +607,9 @@ def heatmap_blend(case_id):
 def open_blender():
     """Launch the local Blender GUI with the rendered .blend so the user sees the model."""
     b = request.get_json(force=True, silent=True) or {}
-    case_key = b.get("case") if b.get("case") in CASES else next(iter(CASES))
+    case_key = b.get("case") or next(iter(CASES))
     _, blend = _heatmap_paths(case_key)
-    if not blend.exists():
+    if not blend or not blend.exists():
         return jsonify({"ok": False, "error": "render the model first"}), 200
     blender = _blender_bin()
     if not (os.path.exists(blender) or shutil.which(blender)):

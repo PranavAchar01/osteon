@@ -74,6 +74,23 @@
   .pchip{margin-left:auto;padding:8px 16px;border-radius:999px;font-size:13px;font-weight:700;letter-spacing:.3px}
   .pchip.ok{background:var(--soft);color:var(--blue)} .pchip.no{background:#fdeaea;color:var(--red)}
 
+  .npbtn{display:block;width:100%;margin:0 0 12px;border:1px solid var(--ink);background:#fff;color:var(--ink);
+    padding:10px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;letter-spacing:.2px}
+  .npbtn:hover{background:var(--ink);color:#fff}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
+  .modal.on{display:flex}
+  .modal .box{background:#fff;border:1px solid var(--ink);width:480px;max-width:94vw;max-height:90vh;overflow:auto;padding:24px 26px}
+  .modal h3{margin:0;font-size:18px;font-weight:700}
+  .modal .sub{font-size:12px;color:var(--mut);margin:5px 0 18px}
+  .fld{display:flex;flex-direction:column;gap:5px;margin-bottom:13px}
+  .fld>label{font-size:11px;font-weight:600;color:var(--mut);letter-spacing:.3px;text-transform:uppercase}
+  .fld input,.fld select,.fld textarea{border:1px solid var(--line);padding:9px 11px;font-size:14px;
+    font-family:inherit;color:var(--ink);background:#fff;resize:vertical}
+  .fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;border-color:var(--ink);box-shadow:0 0 0 2px #ededed}
+  .frow{display:flex;gap:12px}.frow>.fld{flex:1}
+  .modal .acts{display:flex;gap:10px;margin-top:6px}
+  .modal .acts .act{flex:2}.modal .acts .btn2{flex:1;text-align:center;cursor:pointer}
+  .hint{font-size:11px;color:var(--mut);margin:-7px 0 12px}
   .pipe{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 16px;font-size:12px}
   .pipe .st{border:1px solid var(--line);padding:6px 11px;font-weight:600;color:var(--ink);background:#fff}
   .pipe .st .r{color:var(--mut);font-weight:500}
@@ -147,6 +164,7 @@
 <div class="layout">
   <aside class="sidebar">
     <div class="side-h">Patients</div>
+    <button class="npbtn" id="newP">＋ New patient</button>
     {% for p in patients %}
     <button class="pitem{% if loop.first %} active{% endif %}" data-case="{{p.id}}">
       <span class="pi-av">{{p.initials}}</span>
@@ -217,15 +235,46 @@
   </div>
 </div>
 
+<div class="modal" id="npModal">
+  <div class="box">
+    <h3>New patient</h3>
+    <div class="sub">Runs the full Split A → B → C pipeline live and designs an implant sized to this patient.</div>
+    <div class="fld"><label>Patient name</label><input id="np_name" placeholder="Jane Doe" /></div>
+    <div class="frow">
+      <div class="fld"><label>Age</label><input id="np_age" type="number" placeholder="54" /></div>
+      <div class="fld"><label>Sex</label><select id="np_sex"><option>F</option><option>M</option></select></div>
+      <div class="fld"><label>Side</label><select id="np_side"><option>Left</option><option>Right</option></select></div>
+    </div>
+    <div class="frow">
+      <div class="fld"><label>Bone</label><select id="np_bone"><option>Femur</option><option>Tibia</option></select></div>
+      <div class="fld"><label>Implant material</label><select id="np_mat">{% for m in materials %}<option>{{m}}</option>{% endfor %}</select></div>
+    </div>
+    <div class="frow">
+      <div class="fld"><label>Load scenario</label><select id="np_load">{% for l in loads %}<option>{{l}}</option>{% endfor %}</select></div>
+      <div class="fld"><label>Bone stiffness (MPa)</label><input id="np_boneE" type="number" value="17000" /></div>
+    </div>
+    <div class="hint">Lower stiffness ≈ osteoporotic bone · healthy cortical bone ≈ 17000 MPa.</div>
+    <div class="fld"><label>Defect / fracture</label><textarea id="np_defect" rows="2">Transverse mid-shaft fracture</textarea></div>
+    <div class="acts">
+      <button class="act" id="np_go">Design implant (live)</button>
+      <a class="btn2" id="np_cancel">Cancel</a>
+    </div>
+    <div class="bstat" id="np_status" style="margin-top:12px"></div>
+  </div>
+</div>
+
 <script>
 const $ = s => document.querySelector(s);
 const fmt = (x,d=1) => (typeof x==='number'&&isFinite(x)) ? (Math.abs(x)>=100?Math.round(x):x.toFixed(d)) : x;
-['load','fail_mode'].forEach(id=>document.getElementById(id).addEventListener('change',run));
-// patient list -> select that case + re-evaluate
-document.querySelectorAll('.pitem').forEach(el=>el.addEventListener('click',()=>{
+// active case: a preset key ("c1") or a live custom patient (params held in CUSTOM[id])
+let activeId='c1', activeCustom=null; const CUSTOM={};
+function selectPitem(el){
   document.querySelectorAll('.pitem').forEach(e=>e.classList.toggle('active', e===el));
-  document.getElementById('case').value=el.dataset.case; run();
-}));
+  activeId=el.dataset.case; activeCustom=el.dataset.custom?CUSTOM[el.dataset.custom]:null; run();
+}
+function bindPitem(el){ el.addEventListener('click',()=>selectPitem(el)); }
+document.querySelectorAll('.pitem').forEach(bindPitem);
+['load','fail_mode'].forEach(id=>document.getElementById(id).addEventListener('change',run));
 // pancake: show / hide the patients sidebar
 document.getElementById('ham').addEventListener('click',()=>document.querySelector('.layout').classList.toggle('collapsed'));
 
@@ -234,13 +283,47 @@ async function run(){
   const my=++seq;
   $('#status').textContent='running A→B→C…';
   resetBlend();
+  const common={load:$('#load').value, fail_mode:$('#fail_mode').value};
+  const url = activeCustom ? '/api/design' : '/api/run';
+  const body = activeCustom ? {...activeCustom, ...common} : {case:activeId, ...common};
   try{
-    const res=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({case:$('#case').value, load:$('#load').value, fail_mode:$('#fail_mode').value})});
+    const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await res.json();
     if(my!==seq) return;            // a newer request superseded this one — ignore
+    if(data.error){ $('#status').textContent='error'; return; }
     render(data); $('#status').textContent='updated';
   }catch(e){ if(my===seq) $('#status').textContent='error'; }
+}
+
+// ---------------- New patient: design an implant live from custom inputs ----------------
+const npModal=$('#npModal');
+$('#newP').addEventListener('click',()=>{ npModal.classList.add('on'); $('#np_status').textContent=''; });
+$('#np_cancel').addEventListener('click',()=>npModal.classList.remove('on'));
+npModal.addEventListener('click',e=>{ if(e.target===npModal) npModal.classList.remove('on'); });
+$('#np_go').addEventListener('click',async()=>{
+  const params={ cid:'custom-'+Date.now().toString(36),
+    name:$('#np_name').value||'New Patient', age:$('#np_age').value, sex:$('#np_sex').value, side:$('#np_side').value,
+    bone:$('#np_bone').value, material:$('#np_mat').value, bone_E:$('#np_boneE').value, defect:$('#np_defect').value };
+  // adopt the patient's load scenario into the top bar so re-runs stay consistent
+  $('#load').value=$('#np_load').value;
+  $('#np_go').disabled=true; $('#np_status').textContent='running the full A→B→C pipeline… (~10s)';
+  try{
+    const body={...params, load:$('#load').value, fail_mode:$('#fail_mode').value};
+    const res=await fetch('/api/design',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const data=await res.json();
+    if(data.error){ $('#np_status').textContent='error: '+data.error; $('#np_go').disabled=false; return; }
+    addCustomPatient(data.new_patient, params);
+    npModal.classList.remove('on'); $('#np_go').disabled=false;
+    seq++; resetBlend(); render(data); $('#status').textContent='updated';
+  }catch(e){ $('#np_status').textContent='error: '+e; $('#np_go').disabled=false; }
+});
+function addCustomPatient(np, params){
+  CUSTOM[np.id]={...params}; activeId=np.id; activeCustom=CUSTOM[np.id];
+  const btn=document.createElement('button');
+  btn.className='pitem'; btn.dataset.case=np.id; btn.dataset.custom=np.id;
+  btn.innerHTML=`<span class="pi-av">${np.initials}</span><span class="pi-txt"><span class="pi-name">${np.name}</span><span class="pi-sub">${np.demo} · ${np.site}</span></span>`;
+  document.querySelector('.sidebar').appendChild(btn); bindPitem(btn);
+  document.querySelectorAll('.pitem').forEach(e=>e.classList.toggle('active', e===btn));
 }
 
 function render(d){
@@ -384,13 +467,15 @@ function buildScene(d, stlGeo, boneRaw){
     const x0=Math.min(Math.max(x+Lb/2,0),Lb);
     const M=(x0<=Lb/2)? P*x0/2 : P*(Lb-x0)/2, s0=Math.abs(M)/Zb;
     let s=(Math.abs(x)<=plateHalf)? s0*phi : s0;
-    for(let i=0;i<screwX.length;i++){ const b=Math.exp(-0.5*Math.pow((x-screwX[i])/8,2)); s=Math.max(s, s0*2.4*b); }
+    for(let i=0;i<screwX.length;i++){ const b=Math.exp(-0.5*Math.pow((x-screwX[i])/8,2)); s=Math.max(s, s0*2.6*b); }  // Kt≈engine stress_concentration_factor_hole
     [-plateHalf,plateHalf].forEach(xe=>{ const b=Math.exp(-0.5*Math.pow((x-xe)/8,2)); s=Math.max(s, s0*1.8*b); });
     return Math.min(s, byield);
   }
   function paintBone(geom, Lb){
     const pp=geom.attributes.position, m=pp.count, cc=new Float32Array(m*3);
-    for(let i=0;i<m;i++){ const c=cool(boneSigma(pp.getX(i), Lb)/byield); cc[i*3]=c.r; cc[i*3+1]=c.g; cc[i*3+2]=c.b; }
+    // gamma 0.6 spreads the low/mid range so the shielded dip + risers are clearly visible
+    for(let i=0;i<m;i++){ const c=cool(Math.pow(Math.min(1,boneSigma(pp.getX(i),Lb)/byield),0.6));
+      cc[i*3]=c.r; cc[i*3+1]=c.g; cc[i*3+2]=c.b; }
     geom.setAttribute('color', new THREE.BufferAttribute(cc,3));
   }
   const boneMat=()=>new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.92, metalness:0.0, side:THREE.DoubleSide});
@@ -426,7 +511,8 @@ function buildScene(d, stlGeo, boneRaw){
   const pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
   const vmArr=new Float32Array(n); let vmMax=1e-9;
   for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; vmArr[i]=Math.abs(moment(x0,Lg,P,mode)*pos.getY(i)/Iplate); if(vmArr[i]>vmMax)vmMax=vmArr[i]; }
-  for(let i=0;i<n;i++){ const c=warm(vmArr[i]/vmMax); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
+  // gamma 0.6 so the high-mid / low-ends gradient is clearly visible across the plate
+  for(let i=0;i<n;i++){ const c=warm(Math.pow(vmArr[i]/vmMax,0.6)); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
   let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Iplate,mode)));
   const dsc=(maxW>0)?Math.min(0.05*Lg,5)/maxW:0;
   for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Iplate,mode)*dsc); }
@@ -489,7 +575,7 @@ $('#genBlend').onclick=async ()=>{
   $('#blendStatus').textContent='rendering in Blender… (~10s)';
   try{
     const res=await fetch('/api/heatmap',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({case:$('#case').value, load:$('#load').value})});
+      body:JSON.stringify({case:activeId, load:$('#load').value})});
     const d=await res.json();
     if(d.error){ $('#blendStatus').textContent='error: '+d.error; btn.disabled=false; return; }
     $('#blendPreview').innerHTML=`<img src="${d.png_url}?t=${Date.now()}" alt="implant + bone stress heat map">`;
@@ -505,7 +591,7 @@ $('#openBlend').onclick=async ()=>{
   $('#blendStatus').textContent='opening Blender on your desktop…';
   try{
     const res=await fetch('/api/open-blender',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({case:$('#case').value})});
+      body:JSON.stringify({case:activeId})});
     const d=await res.json();
     $('#blendStatus').textContent = d.ok ? 'Blender is opening — check your desktop' : ('Blender: '+(d.error||'failed'));
   }catch(e){ $('#blendStatus').textContent='error: '+e; }
