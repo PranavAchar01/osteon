@@ -8,9 +8,11 @@ generate_mesh runs, and a killed LLM falls through to the CMA-ES rung which stil
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+import trimesh
 
-from common.contracts import CaseSpec, PlacementPlan, StressReport, Vec3
+from common.contracts import AnchorPoint, CaseSpec, PlacementPlan, StressReport, Vec3
 from common.errors import RejectedOutput
 from common.trace import LoopTrace
 from split_b_synthesis import engine, mcp_server
@@ -126,9 +128,9 @@ def test_bad_output_guardrail_blocks_generate_mesh(monkeypatch, plan, case):
     calls = []
     real_generate = engine.generate_mesh
 
-    def spy(theta):
+    def spy(theta, *args, **kwargs):
         calls.append(theta)
-        return real_generate(theta)
+        return real_generate(theta, *args, **kwargs)
 
     monkeypatch.setattr(engine, "generate_mesh", spy)
 
@@ -184,3 +186,62 @@ def test_trace_records_rung_fallback_and_error(monkeypatch, plan, case):
     assert failed, "expected a span for the failed rung-1 attempt"
     assert any(s.get("fallback") and s.get("error") == "E_RETRYABLE" for s in failed), spans
     assert any(s.get("rung") == 2 for s in spans), "expected a span for the rung-2 success"
+
+
+# --- Integration: coordinate-frame-driven placement is recomputed per patient -------------
+def _synthetic_plan(case_id, angle_deg, axis, center, anchor_xz):
+    """A PlacementPlan with clustered, coplanar anchors on a plate face, in a rotated frame."""
+    R = trimesh.transformations.rotation_matrix(np.radians(angle_deg), axis)[:3, :3]
+    c = np.array(center, dtype=np.float64)
+    aps = []
+    for i, (lx, lz) in enumerate(anchor_xz):
+        world = R.T @ np.array([lx, -2.0, lz]) + c  # on the plate bottom face
+        nrm = R.T @ np.array([0.0, -1.0, 0.0])
+        aps.append(
+            AnchorPoint(
+                id=f"s{i}",
+                xyz=Vec3(x=world[0], y=world[1], z=world[2]),
+                normal=Vec3(x=nrm[0], y=nrm[1], z=nrm[2]),
+                cortical_thickness_mm=4.0,
+            )
+        )
+    return PlacementPlan(
+        case_id=case_id,
+        coordinate_frame={"origin": {"x": c[0], "y": c[1], "z": c[2]}, "basis": R.tolist()},
+        anchor_points=aps,
+        resection_planes=[],
+        defect_region={"centroid": {"x": c[0], "y": c[1], "z": c[2]}, "obb": [], "volume_mm3": 0.0},
+        fit_target_surface_path="",
+        confidence=0.9,
+        fallback_rung=1,
+        trace_id=case_id,
+    )
+
+
+def test_placement_is_frame_driven_not_static():
+    """Two different frames + anchor sets: in BOTH, every screw hole lands < 1 mm from its anchor
+    and the body centers on the placement origin. Proves placement is recomputed per patient."""
+    plans = [
+        _synthetic_plan(
+            "synthA", 20, [0, 1, 0], [40, -10, 25], [(-4, -35), (3, -12), (-2, 14), (4, 36)]
+        ),
+        _synthetic_plan(
+            "synthB", 50, [1, 1, 0], [-60, 30, 5], [(2, -28), (-3, -6), (5, 18), (-1, 30)]
+        ),
+    ]
+    centroids = []
+    for plan in plans:
+        theta = engine.seed_theta(plan)
+        anchors, frame = engine._placement(plan)
+        result = mcp_server.generate_mesh(theta, anchors, frame)
+        v = result["validity"]
+        assert v["watertight"] and v["manifold"] and not v["self_intersect"], (plan.case_id, v)
+        # every given anchor is within 1 mm of the placed mesh surface (a screw hole sits there)
+        contacts = mcp_server.check_contacts(result["mesh_path"], anchors)
+        assert contacts["all_touch"], (plan.case_id, contacts)
+        # the implant body centers on the placement origin (defect / anchor centroid)
+        center = np.array([frame["origin"][k] for k in ("x", "y", "z")])
+        mesh = trimesh.load(result["mesh_path"])
+        assert np.linalg.norm(mesh.centroid - center) < 5.0, (plan.case_id, mesh.centroid, center)
+        centroids.append(tuple(np.round(mesh.centroid, 1)))
+    assert centroids[0] != centroids[1], "different patients must yield different placements"
