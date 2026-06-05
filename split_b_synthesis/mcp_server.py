@@ -122,26 +122,79 @@ def _export_stl(mesh: trimesh.Trimesh, prefix: str) -> str:
     return str(path)
 
 
-def _generate_mesh_impl(theta: dict) -> dict:
-    base = _plate_box(theta)
-    cutters = _screw_cylinders(theta)
+# --- coordinate-frame-driven placement (the implant goes ONTO the bone) ------------------
+_SCREW_RADIUS_MM = 0.85  # small bone-screw hole; also keeps an on-axis anchor < 1 mm from the wall
+
+
+def _to_xyz(d: dict) -> np.ndarray:
+    return np.array([d["x"], d["y"], d["z"]], dtype=np.float64)
+
+
+def _placed_plate(theta: dict, anchors: list, frame: dict) -> trimesh.Trimesh:
+    """Build the plate in the plan's LOCAL frame with a screw hole at each on-plate anchor, then
+    transform it into the bone WORLD frame so it overlays the bone mesh.
+
+    Local axes follow the plan basis: +Z = bone long axis (length), X = width, Y = thickness. A
+    hole whose axis passes through an anchor leaves that anchor ~radius from the hole wall, so
+    anchors that sit on the plate come back < 1 mm in check_contacts. Everything is recomputed
+    from the PlacementPlan each call (nothing static).
+    """
+    R = np.asarray(frame["basis"], dtype=np.float64)  # rows = local axes in world (world -> local)
+    center = _to_xyz(frame["origin"])
+    aw = np.array([_to_xyz(a["xyz"]) for a in anchors], dtype=np.float64)
+    nw = np.array([_to_xyz(a["normal"]) for a in anchors], dtype=np.float64)
+    a_local = (R @ (aw - center).T).T
+    n_local = (R @ nw.T).T
+
+    length, width, thickness = theta["length_mm"], theta["width_mm"], theta["thickness_mm"]
+    base = trimesh.creation.box(extents=[width, thickness, length])
+    cutters = []
+    for p, n in zip(a_local, n_local):
+        if abs(p[0]) > width / 2 or abs(p[2]) > length / 2:
+            continue  # anchor projects outside the plate face -> no screw hole here
+        axis = n / (np.linalg.norm(n) or 1.0)
+        if abs(axis[1]) < 0.3:  # nearly in-plane normal -> drill straight through the thickness
+            axis = np.array([0.0, 1.0, 0.0])
+        cyl = trimesh.creation.cylinder(
+            radius=_SCREW_RADIUS_MM, height=thickness * 6.0, sections=_CYLINDER_SECTIONS
+        )
+        cyl.apply_transform(trimesh.geometry.align_vectors([0.0, 0.0, 1.0], axis))
+        cyl.apply_translation([p[0], 0.0, p[2]])  # hole through the plate at the anchor's (x, z)
+        cutters.append(cyl)
+
     mesh = _boolean_difference(base, cutters) if cutters else base
+    to_world = np.eye(4)
+    to_world[:3, :3] = R.T  # local -> world (R is orthonormal)
+    to_world[:3, 3] = center
+    mesh.apply_transform(to_world)
+    return mesh
+
+
+def _generate_mesh_impl(theta: dict, anchors=None, frame=None) -> dict:
+    if anchors and frame:
+        mesh = _placed_plate(theta, anchors, frame)  # frame-driven: implant placed onto the bone
+    else:
+        base = _plate_box(theta)  # no placement data: generic plate at the local origin
+        cutters = _screw_cylinders(theta)
+        mesh = _boolean_difference(base, cutters) if cutters else base
     if mesh is None or len(mesh.faces) == 0:
         raise ToolFailError("generate_mesh produced an empty mesh")
     return {"mesh_path": _export_stl(mesh, "cand"), "validity": _validity(mesh)}
 
 
 @osteon_tool(mcp)
-def generate_mesh(theta: dict) -> dict:
-    """Build the parametric plate (box minus screw cylinders) and export a watertight STL.
+def generate_mesh(theta: dict, anchors: list = None, frame: dict = None) -> dict:
+    """Build the implant plate and export a watertight STL in the bone world frame.
 
-    Returns {mesh_path, validity}. Enforces OSTEON_DEADLINE_MS itself via concurrent.futures
-    (osteon_tool normalizes errors + bounds size but does NOT add a timeout); raises
-    ToolFailError on timeout or any geometry failure.
+    With `anchors` + `frame` (a PlacementPlan's anchor_points and coordinate_frame), the plate is
+    placed at the frame origin, oriented along the bone long axis, with a screw hole at each
+    on-plate anchor, then transformed into world coordinates so it overlays the bone. Without
+    them it falls back to a generic centred plate. Returns {mesh_path, validity}. Enforces
+    OSTEON_DEADLINE_MS itself; raises ToolFailError on timeout or any geometry failure.
     """
     deadline_s = max(0.1, settings.OSTEON_DEADLINE_MS / 1000.0)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_generate_mesh_impl, theta)
+        future = pool.submit(_generate_mesh_impl, theta, anchors, frame)
         try:
             return future.result(timeout=deadline_s)
         except concurrent.futures.TimeoutError:

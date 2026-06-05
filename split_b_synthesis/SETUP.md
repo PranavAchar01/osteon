@@ -130,3 +130,26 @@ uv pip install -e ".[dev,localization,synthesis]"
 pytest -q split_b_synthesis/test_acceptance.py    # convergence + 2 injected failures + trace
 python -m split_b_synthesis.engine                # regenerate the 5 fixtures (rung 2 offline)
 ```
+
+---
+
+## 9. Coordinate-frame placement (integration — the implant goes ONTO the bone)
+
+The implant is modeled INTO the PlacementPlan frame and recomputed per patient (nothing static):
+- **Position:** body centered at `defect_region.centroid` if populated, else the **anchor centroid**.
+- **Orientation:** long axis along `coordinate_frame.basis` +Z (bone long axis); X = width, Y = thickness.
+- **Size:** `seed_theta` spans the anchors in the local frame (length along +Z, width across) and takes
+  thickness from `cortical_thickness_mm`, all clamped to `THETA_BOUNDS`. The controller (LLM/CMA) tunes
+  **thickness**; plate length/width/screw layout follow the anatomy.
+- **Screws:** a hole is drilled at each on-plate anchor (axis along the anchor normal), then the finished
+  plate is rigid-transformed **local → world** so the STL overlays the bone mesh.
+- **Contacts:** `contacts_anchor_ids` come from the real `check_contacts` (<1 mm) on the world-frame mesh.
+
+**Units / overlay:** anchors and the implant STL are in **mm**; A's `dummy_bone.stl` is in **meters** —
+scale the bone ×1000 (A's pipeline already does) to overlay the implant in the same frame.
+
+**On A's current fixtures:** the 4 anchors are scattered ~15–110 mm around the 3-D shaft (not a coplanar
+fracture line), so a single flat bounded plate contacts only the anchors that land on it (e.g. test_case_02
+→ a0, a3; the others none). Placement itself is correct and per-patient — proven by
+`test_placement_is_frame_driven_not_static` (two frames, every screw < 1 mm). Full screws-at-all-anchors
+needs clustered fracture-line anchors from A, or a curved surface-conform plate (future work).
