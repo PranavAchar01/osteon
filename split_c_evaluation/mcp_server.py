@@ -30,6 +30,27 @@ mcp = FastMCP("fea-mcp")
 
 _OUT = Path(settings.OSTEON_TRACE_DIR)
 
+# Two DISJOINT colour systems so the implant and the bone never share a colour (§heat-map):
+#   IMPLANT — warm "hot-metal" ramp, hue 0..60 deg (red -> orange -> white-hot yellow)
+#   BONE    — cool ramp,            hue 180..270 deg (cyan -> blue -> indigo)
+# Verified ~134 deg hue guard gap; greens/magentas are never emitted by either ramp.
+WARM_STOPS = [
+    (0.00, (60, 10, 8)), (0.15, (120, 18, 10)), (0.30, (180, 30, 8)), (0.50, (225, 70, 5)),
+    (0.70, (245, 130, 10)), (0.85, (252, 185, 20)), (1.00, (255, 238, 70)),
+]
+COOL_STOPS = [
+    (0.00, (215, 245, 250)), (0.15, (165, 230, 245)), (0.30, (100, 200, 235)),
+    (0.50, (50, 150, 215)), (0.70, (35, 95, 190)), (0.85, (40, 55, 160)), (1.00, (45, 25, 120)),
+]
+
+
+def _segmented_cmap(name, stops):
+    from matplotlib.colors import LinearSegmentedColormap
+
+    return LinearSegmentedColormap.from_list(
+        name, [(t, (r / 255.0, g / 255.0, b / 255.0)) for t, (r, g, b) in stops]
+    )
+
 
 def _extents(mesh_path: str):
     import trimesh
@@ -142,12 +163,18 @@ def render_stress_heatmap(
     bone_path: str = "",
     solver_used: str = "full_fea",
     factor_of_safety: float = None,
+    bone_vertices: list = None,
+    bone_field: list = None,
+    bone_yield_mpa: float = 130.0,
+    bone_scale: float = 1.0,
 ) -> dict:
-    """Paint per-vertex von Mises stress onto the implant surface and render it headless
-    in Blender (PNG + interactive .blend). Fixed [0, yield] colour normalisation so colours
-    are comparable across cases; a peak-stress marker is dropped at the hot spot.
+    """Paint per-vertex stress onto BOTH the implant and the surrounding bone and render
+    them together headless in Blender (PNG + interactive .blend). Two DISJOINT colour
+    systems (warm = implant von Mises [0, yield]; cool = bone load [0, bone_yield]) so a
+    colour can never be confused between the two meshes; each gets its own legend. A
+    peak-stress marker is dropped at the implant hot spot.
 
-    Returns {png_path, blend_path, peak_mpa, peak_location}.
+    Returns {png_path, blend_path, peak_mpa, peak_location, bone_peak_mpa}.
     """
     import json as _json
     import subprocess
@@ -174,19 +201,43 @@ def render_stress_heatmap(
     yld = float(yield_mpa) if yield_mpa and yield_mpa > 0 else max(peak, 1.0)
     fos = factor_of_safety if factor_of_safety is not None else (yld / peak if peak > 0 else None)
 
-    # FIXED [0, yield] normalisation (do NOT auto-scale) -> same colour means same MPa.
-    cmap = mpl.colormaps["turbo"]
-    rgba = cmap(np.clip(vm / yld, 0.0, 1.0))
+    warm = _segmented_cmap("vm_warm", WARM_STOPS)
+    cool = _segmented_cmap("bone_cool", COOL_STOPS)
+    # FIXED normalisation (do NOT auto-scale) -> same colour means same MPa, per mesh.
+    rgba = warm(np.clip(vm / yld, 0.0, 1.0))
 
     out_dir = Path(settings.OSTEON_TRACE_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(mesh_path).stem
     data = {
-        "vertices": verts.tolist(),
-        "rgba": rgba.tolist(),
-        "peak_xyz": peak_xyz,
-        "marker_radius": float((verts.max(0) - verts.min(0)).max() * 0.04),
+        "implant": {
+            "vertices": verts.tolist(),
+            "rgba": rgba.tolist(),
+            "peak_xyz": peak_xyz,
+            "marker_radius": float((verts.max(0) - verts.min(0)).max() * 0.04),
+        }
     }
+
+    # Optional BONE layer — its own cool colour system + scale (metres -> mm via bone_scale).
+    byld = float(bone_yield_mpa) if bone_yield_mpa and bone_yield_mpa > 0 else 130.0
+    bone_peak = None
+    has_bone = (
+        bone_path
+        and os.path.exists(bone_path)
+        and bone_vertices is not None
+        and bone_field is not None
+        and len(bone_vertices) == len(bone_field)
+    )
+    if has_bone:
+        bf = np.asarray(bone_field, dtype=float)
+        bone_peak = float(np.nanmax(bf)) if bf.size else None
+        brgba = cool(np.clip(bf / byld, 0.0, 1.0))
+        data["bone"] = {
+            "vertices": list(bone_vertices),
+            "rgba": brgba.tolist(),
+            "scale": float(bone_scale),
+        }
+
     dj = tempfile.mktemp(suffix=".json")
     with open(dj, "w") as f:
         _json.dump(data, f)
@@ -202,7 +253,7 @@ def render_stress_heatmap(
     script = str(Path(__file__).resolve().parent / "heatmap_render.py")
     cmd = [blender, "--background", "--python", script, "--", mesh_path, dj, v0, v1, blend_path]
     if bone_path and os.path.exists(bone_path):
-        cmd.append(bone_path)
+        cmd.append(bone_path)  # bone STL imported + painted (or ivory if no bone field)
     timeout_s = max(45, int(settings.OSTEON_DEADLINE_MS / 1000) * 4)
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=timeout_s)
@@ -216,19 +267,31 @@ def render_stress_heatmap(
         if os.path.exists(dj):
             os.unlink(dj)
 
-    # legend: vertical colour bar, fixed [0, yield], annotated with peak / yield / FoS / rung
+    # legend: TWO vertical colour bars side by side (implant warm | bone cool), each on its
+    # own fixed scale, annotated so the disjoint colour systems are unambiguous.
     legend = tempfile.mktemp(suffix=".png")
-    fig, ax = plt.subplots(figsize=(2.7, 9), dpi=100)
-    norm = mpl.colors.Normalize(vmin=0, vmax=yld)
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    ncols = 2 if has_bone else 1
+    fig, axes = plt.subplots(1, ncols, figsize=(2.7 * ncols, 9), dpi=100)
+    axes = np.atleast_1d(axes)
+    sm = mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin=0, vmax=yld), cmap=warm)
     sm.set_array([])
-    fig.colorbar(sm, cax=ax)
-    ax.set_ylabel("von Mises stress (MPa)", fontsize=12)
-    title = f"peak {peak:.0f} MPa\nyield {yld:.0f} MPa"
+    fig.colorbar(sm, cax=axes[0])
+    axes[0].set_ylabel("implant von Mises (MPa)", fontsize=12)
+    title = f"IMPLANT\npeak {peak:.0f} MPa\nyield {yld:.0f} MPa"
     if fos is not None:
         title += f"\nFoS {fos:.1f}"
     title += f"\nsolver: {solver_used}"
-    ax.set_title(title, fontsize=11)
+    axes[0].set_title(title, fontsize=10)
+    if has_bone:
+        smb = mpl.cm.ScalarMappable(norm=mpl.colors.Normalize(vmin=0, vmax=byld), cmap=cool)
+        smb.set_array([])
+        fig.colorbar(smb, cax=axes[1])
+        axes[1].set_ylabel("bone load (MPa)", fontsize=12)
+        bt = "BONE"
+        if bone_peak is not None:
+            bt += f"\npeak {bone_peak:.0f} MPa"
+        bt += f"\nyield {byld:.0f} MPa"
+        axes[1].set_title(bt, fontsize=10)
     fig.savefig(legend, bbox_inches="tight", facecolor="white")
     plt.close(fig)
 
@@ -250,6 +313,7 @@ def render_stress_heatmap(
         "png_path": png_path,
         "blend_path": blend_path,
         "peak_mpa": round(peak, 3),
+        "bone_peak_mpa": round(bone_peak, 3) if bone_peak is not None else None,
         "peak_location": {
             "x": round(peak_xyz[0], 3),
             "y": round(peak_xyz[1], 3),

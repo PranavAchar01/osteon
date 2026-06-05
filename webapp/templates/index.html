@@ -87,7 +87,7 @@
   .verdict p{margin:7px 0 0;font-size:15px;max-width:840px;line-height:1.5}
   .verdict .ctx{margin-top:6px;font-size:12.5px;color:var(--mut)}
 
-  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:16px}
   .card{border:1px solid var(--line);border-radius:var(--r);padding:17px 19px;background:var(--card);box-shadow:var(--sh)}
   .card .l{font-size:11.5px;color:var(--mut);font-weight:600;letter-spacing:.2px}
   .card .v{font-size:27px;font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
@@ -102,9 +102,16 @@
   .tip,.tip2{position:absolute;top:12px;font-size:11.5px;color:var(--mut);background:rgba(255,255,255,.85);
     border:1px solid var(--line);border-radius:999px;padding:4px 11px}
   .tip{right:14px} .tip2{left:14px}
-  .scale{display:flex;align-items:center;gap:11px;margin-top:11px;font-size:12px;color:var(--mut)}
-  .scale .b{display:flex;flex:1;height:14px;border:1px solid var(--line);border-radius:999px;overflow:hidden}
-  .scale .b span{flex:1}
+  .scale{display:flex;align-items:center;gap:11px;font-size:12px;color:var(--mut)}
+  .scale .b{display:block;flex:1;height:14px;border:1px solid var(--line);border-radius:999px;overflow:hidden}
+  .legends{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:13px}
+  @media (max-width:720px){.legends{grid-template-columns:1fr}}
+  .leg-h{font-size:12.5px;color:var(--ink);font-weight:600;display:flex;align-items:center;gap:8px;margin-bottom:6px}
+  .dot{width:12px;height:12px;border-radius:3px;display:inline-block;flex:0 0 auto}
+  .dot.warm{background:linear-gradient(135deg,#b21e1e,#fde047)}
+  .dot.cool{background:linear-gradient(135deg,#9be0f5,#2d1978)}
+  #barImplant{background:linear-gradient(to right,rgb(60,10,8),rgb(120,18,10),rgb(180,30,8),rgb(225,70,5),rgb(245,130,10),rgb(252,185,20),rgb(255,238,70))}
+  #barBone{background:linear-gradient(to right,rgb(215,245,250),rgb(165,230,245),rgb(100,200,235),rgb(50,150,215),rgb(35,95,190),rgb(40,55,160),rgb(45,25,120))}
 
   .blend{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
   button.act{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-weight:600;
@@ -170,9 +177,18 @@
 
   <div class="cards" id="cards"></div>
 
-  <h2>Stress on the implant — fracture fixation</h2>
+  <h2>Stress map — implant &amp; bone</h2>
   <div class="viewer" id="viewer"><div class="tip2" id="tip2"></div><div class="tip">drag to rotate · scroll to zoom</div></div>
-  <div class="scale"><span id="sc0">0 MPa</span><div class="b" id="bar3d"></div><span id="scMax">limit</span></div>
+  <div class="legends">
+    <div class="leg">
+      <div class="leg-h"><span class="dot warm"></span>Implant — stress in the metal</div>
+      <div class="scale"><span id="iLo">0 MPa</span><div class="b" id="barImplant"></div><span id="iHi">peak</span></div>
+    </div>
+    <div class="leg">
+      <div class="leg-h"><span class="dot cool"></span>Bone — load the bone still carries</div>
+      <div class="scale"><span id="bLo">0 MPa</span><div class="b" id="barBone"></div><span id="bHi">130 MPa</span></div>
+    </div>
+  </div>
 
   <h2>Blender stress model</h2>
   <div class="blend">
@@ -245,10 +261,12 @@ function render(d){
     ['Highest stress', fmt(r.peak_von_mises_MPa)+' MPa', safe?'':'no','material limit '+fmt(mat.yield_MPa)+' MPa'],
     ['Repeated loading', r.fatigue_safe?'Safe':'At risk', r.fatigue_safe?'yes':'no','over many steps'],
     ['Bone load kept', Math.round(r.stress_shielding_index*100)+'%','', 'bone keeps carrying load'],
+    ['Bone load balance', '<span id="balVal">…</span>','', 'how evenly pressure spreads'],
   ];
   $('#cards').innerHTML=cards.map(([l,v,cl,s])=>`<div class="card"><div class="l">${l}</div><div class="v ${cl}">${v}</div><div class="s">${s}</div></div>`).join('');
 
-  $('#sc0').textContent='0 MPa'; $('#scMax').textContent=fmt(r.peak_von_mises_MPa)+' MPa (peak)';
+  $('#iLo').textContent='0 MPa'; $('#iHi').textContent=fmt(r.peak_von_mises_MPa)+' MPa (peak)';
+  $('#bLo').textContent='0 MPa'; $('#bHi').textContent='130 MPa';
   build3D(d);
 
   const steps=[['full_fea','3-D simulation'],['reduced_surrogate','Fast estimate'],['analytic_fallback','Simple formula']];
@@ -264,8 +282,15 @@ function render(d){
 }
 
 // ---------------- 3-D bone + implant scene ----------------
-const BANDS=['#13335c','#1f5aa0','#5b8fd0','#a9c6e8','#e8d49a','#e0a23e','#cf6a26','#c0392b'];
-$('#bar3d').innerHTML=BANDS.map(h=>`<span style="background:${h}"></span>`).join('');
+// Two DISJOINT colour systems (see Split C stress heat-map): warm = implant von Mises,
+// cool = bone load. ~134° hue guard gap so a colour is never ambiguous between meshes.
+const WARM=[[0,60,10,8],[.15,120,18,10],[.30,180,30,8],[.50,225,70,5],[.70,245,130,10],[.85,252,185,20],[1,255,238,70]];
+const COOL=[[0,215,245,250],[.15,165,230,245],[.30,100,200,235],[.50,50,150,215],[.70,35,95,190],[.85,40,55,160],[1,45,25,120]];
+function ramp(stops,t){ t=Math.min(1,Math.max(0,t||0));
+  for(let i=1;i<stops.length;i++){ if(t<=stops[i][0]){ const a=stops[i-1],b=stops[i],f=(t-a[0])/((b[0]-a[0])||1);
+    return new THREE.Color((a[1]+(b[1]-a[1])*f)/255,(a[2]+(b[2]-a[2])*f)/255,(a[3]+(b[3]-a[3])*f)/255); } }
+  const l=stops[stops.length-1]; return new THREE.Color(l[1]/255,l[2]/255,l[3]/255); }
+const warm=t=>ramp(WARM,t), cool=t=>ramp(COOL,t);
 const ok3D=(typeof THREE!=='undefined' && THREE.OrbitControls);
 let scene,camera,renderer,controls,world;
 function init3D(){
@@ -283,7 +308,6 @@ function init3D(){
     renderer.setSize(e.clientWidth,e.clientHeight); camera.aspect=e.clientWidth/e.clientHeight; camera.updateProjectionMatrix(); });
   (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera); })();
 }
-function band(t){ return new THREE.Color(BANDS[Math.min(BANDS.length-1,Math.max(0,Math.floor(t*BANDS.length)))]); }
 function moment(x0,L,P,mode){ if(mode==='axial')return 0; if(mode==='cantilever')return P*(L-x0); return x0<=L/2?P*x0/2:P*(L-x0)/2; }
 function deflect(x0,L,P,E,I,mode){ if(mode==='axial'||I<=0||E<=0)return 0;
   if(mode==='cantilever')return P*x0*x0*(3*L-x0)/(6*E*I); const x=x0<=L/2?x0:L-x0; return P*x*(3*L*L-4*x*x)/(48*E*I); }
@@ -310,31 +334,7 @@ function buildScene(d, stlGeo, boneRaw){
   if(world){ scene.remove(world); disposeTree(world); }
   world=new THREE.Group();
 
-  // --- Split A femur: scale to mm, reorient long-axis -> x, center; else a simple shaft ---
-  let topY, botY, boneLen, cz = 0, bonePos = null;
-  if(boneRaw){
-    const bg=boneRaw.clone(); bg.computeBoundingBox(); let s=new THREE.Vector3(); bg.boundingBox.getSize(s);
-    const k=(Math.max(s.x,s.y,s.z)<50)?1000:1; bg.scale(k,k,k);                       // metres -> mm
-    bg.computeBoundingBox(); bg.boundingBox.getSize(s);
-    const e=[s.x,s.y,s.z], iL=e.indexOf(Math.max(...e)), iT=e.indexOf(Math.min(...e)), iW=3-iL-iT;
-    const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iW,1), bz=new THREE.Vector3().setComponent(iT,1);
-    bg.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
-    bg.center(); bg.computeBoundingBox(); bg.boundingBox.getSize(s); boneLen=s.x;
-    bonePos=bg.attributes.position;
-    // mid-diaphysis crest/trough (for camera) and shaft centre-line z (so the plate sits over the shaft)
-    let mx=-1e9, mn=1e9, zsum=0, zc=0;
-    for(let i=0;i<bonePos.count;i++){ const xx=bonePos.getX(i);
-      if(Math.abs(xx)<boneLen*0.12){ zsum+=bonePos.getZ(i); zc++; }
-      if(Math.abs(xx)<boneLen*0.06){ const y=bonePos.getY(i); if(y>mx)mx=y; if(y<mn)mn=y; } }
-    cz=zc?zsum/zc:0; topY=(mx>-1e8)?mx:s.y*0.25; botY=(mn<1e8)?mn:-s.y*0.25;
-    world.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, metalness:0.0, side:THREE.DoubleSide})));
-  } else {
-    const R=Math.max(W*0.55,10); topY=R; botY=-R; boneLen=g.L*1.9;
-    const bm=new THREE.MeshStandardMaterial({color:0xEDE6D6, roughness:0.95, side:THREE.DoubleSide});
-    const c=new THREE.Mesh(new THREE.CylinderGeometry(R,R,boneLen,28),bm); c.rotation.z=Math.PI/2; world.add(c);
-  }
-
-  // --- implant: B's real STL (reoriented length->x, thickness->y), else a box ---
+  // --- implant geometry: B's real STL (reoriented length->x, thickness->y), else a box ---
   let geo;
   if(stlGeo){
     geo=stlGeo.clone(); geo.computeBoundingBox();
@@ -345,19 +345,68 @@ function buildScene(d, stlGeo, boneRaw){
     geo.center();
   } else { geo=new THREE.BoxGeometry(g.L,T,W, Math.max(24,Math.round(g.L/2)),3,Math.max(5,Math.round(W/2))).toNonIndexed(); }
   geo.computeBoundingBox(); const bs=new THREE.Vector3(); geo.boundingBox.getSize(bs);
-  const Lg=bs.x||g.L, Tg=bs.y||T, Ip=W*T*T*T/12;
+  const Lg=bs.x||g.L, Tg=bs.y||T, Iplate=W*T*T*T/12;   // implant transverse-bending I
+  const plateHalf=Lg/2;
 
-  // --- colour + bend the real implant mesh by the stress field ---
-  // auto-scaled stress map: colour by von Mises relative to THIS implant's own peak,
-  // so the distribution (high mid-span -> low ends) is always visible. Safety vs yield
-  // is shown by the verdict/cards; the colourbar gives the absolute peak in MPa.
+  // --- screw axial stations (x along the plate), shared by the bone field + the screw meshes ---
+  const per=Math.max(1,Math.floor(nScrew/2)), inner=Lg*0.14, outer=Lg/2-Lg*0.08;
+  const screwX=[];
+  for(let sI=0;sI<per;sI++){ const f=per===1?0.55:sI/(per-1), xx=inner+(outer-inner)*f; screwX.push(-xx, xx); }
+
+  // --- BONE load field (COOL system): shielded under the plate, risers at the ends + screws ---
+  // composite-beam load share phi = EI_bone/(EI_bone+EI_implant) (matches the report's shielding).
+  const Ibone=16700, Istrong=T*W*W*W/12, Eb=d.case.bone_E||17000;
+  const phi=(Eb*Ibone)/((Eb*Ibone)+(E*Istrong)), Zb=Ibone/12.08, byield=130;
+  function boneSigma(x, Lb){
+    const x0=Math.min(Math.max(x+Lb/2,0),Lb);
+    const M=(x0<=Lb/2)? P*x0/2 : P*(Lb-x0)/2, s0=Math.abs(M)/Zb;
+    let s=(Math.abs(x)<=plateHalf)? s0*phi : s0;
+    for(let i=0;i<screwX.length;i++){ const b=Math.exp(-0.5*Math.pow((x-screwX[i])/8,2)); s=Math.max(s, s0*2.4*b); }
+    [-plateHalf,plateHalf].forEach(xe=>{ const b=Math.exp(-0.5*Math.pow((x-xe)/8,2)); s=Math.max(s, s0*1.8*b); });
+    return Math.min(s, byield);
+  }
+  function paintBone(geom, Lb){
+    const pp=geom.attributes.position, m=pp.count, cc=new Float32Array(m*3);
+    for(let i=0;i<m;i++){ const c=cool(boneSigma(pp.getX(i), Lb)/byield); cc[i*3]=c.r; cc[i*3+1]=c.g; cc[i*3+2]=c.b; }
+    geom.setAttribute('color', new THREE.BufferAttribute(cc,3));
+  }
+  const boneMat=()=>new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.92, metalness:0.0, side:THREE.DoubleSide});
+
+  // --- Split A femur: scale to mm, reorient long-axis -> x, center, paint cool; else a shaft ---
+  let topY, botY, boneLen, cz=0, bonePos=null;
+  if(boneRaw){
+    const bg=boneRaw.clone(); bg.computeBoundingBox(); let s=new THREE.Vector3(); bg.boundingBox.getSize(s);
+    const k=(Math.max(s.x,s.y,s.z)<50)?1000:1; bg.scale(k,k,k);                       // metres -> mm
+    bg.computeBoundingBox(); bg.boundingBox.getSize(s);
+    const e=[s.x,s.y,s.z], iL=e.indexOf(Math.max(...e)), iT=e.indexOf(Math.min(...e)), iW=3-iL-iT;
+    const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iW,1), bz=new THREE.Vector3().setComponent(iT,1);
+    bg.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
+    bg.center(); bg.computeBoundingBox(); bg.boundingBox.getSize(s); boneLen=s.x;
+    bonePos=bg.attributes.position;
+    let mx=-1e9, mn=1e9, zsum=0, zc=0;
+    for(let i=0;i<bonePos.count;i++){ const xx=bonePos.getX(i);
+      if(Math.abs(xx)<boneLen*0.12){ zsum+=bonePos.getZ(i); zc++; }
+      if(Math.abs(xx)<boneLen*0.06){ const y=bonePos.getY(i); if(y>mx)mx=y; if(y<mn)mn=y; } }
+    cz=zc?zsum/zc:0; topY=(mx>-1e8)?mx:s.y*0.25; botY=(mn<1e8)?mn:-s.y*0.25;
+    paintBone(bg, boneLen);
+    world.add(new THREE.Mesh(bg, boneMat()));
+  } else {
+    const R=Math.max(W*0.55,10); topY=R; botY=-R; boneLen=g.L*1.9;
+    const cyl=new THREE.CylinderGeometry(R,R,boneLen,32,40); cyl.rotateZ(Math.PI/2);  // long axis -> x
+    paintBone(cyl, boneLen);
+    world.add(new THREE.Mesh(cyl, boneMat()));
+  }
+
+  // --- colour (WARM) + bend the implant mesh by its own von Mises field ---
+  // auto-scaled to THIS implant's peak so the high-mid / low-ends distribution always reads;
+  // absolute peak (vs yield) is shown by the verdict/cards + the implant colour-bar label.
   const pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
   const vmArr=new Float32Array(n); let vmMax=1e-9;
-  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; vmArr[i]=Math.abs(moment(x0,Lg,P,mode)*pos.getY(i)/Ip); if(vmArr[i]>vmMax)vmMax=vmArr[i]; }
-  for(let i=0;i<n;i++){ const c=band(vmArr[i]/vmMax); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
-  let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Ip,mode)));
+  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; vmArr[i]=Math.abs(moment(x0,Lg,P,mode)*pos.getY(i)/Iplate); if(vmArr[i]>vmMax)vmMax=vmArr[i]; }
+  for(let i=0;i<n;i++){ const c=warm(vmArr[i]/vmMax); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
+  let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Iplate,mode)));
   const dsc=(maxW>0)?Math.min(0.05*Lg,5)/maxW:0;
-  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Ip,mode)*dsc); }
+  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Iplate,mode)*dsc); }
   pos.needsUpdate=true; geo.setAttribute('color',new THREE.BufferAttribute(col,3));
 
   // local bone top surface at axial position x (near the shaft centre-line) — so the plate
@@ -380,7 +429,7 @@ function buildScene(d, stlGeo, boneRaw){
 
   // --- screws: each runs from the plate down THROUGH its hole INTO the bone surface below ---
   const screwMat=new THREE.MeshStandardMaterial({color:0x9aa1aa, roughness:0.4, metalness:0.55});
-  const per=Math.max(1,Math.floor(nScrew/2)), inner=Lg*0.14, outer=Lg/2-Lg*0.08, depth=Math.max((topY-botY)*0.30,7);
+  const depth=Math.max((topY-botY)*0.30,7);
   for(let sI=0;sI<per;sI++){ const f=per===1?0.55:sI/(per-1), xx=inner+(outer-inner)*f;
     [-1,1].forEach(side=>{ const x=side*xx, surf=boneTopAt(x, Lg*0.04+1);
       const yTop=plateY+Tg/2, yBot=surf-depth, slen=Math.max(yTop-yBot, Tg+5);
@@ -395,7 +444,15 @@ function buildScene(d, stlGeo, boneRaw){
   camera.position.set(view*0.30, plateY+view*0.34, cz+view*0.92);
   camera.near=view/400; camera.far=Math.max(boneLen,view)*40; camera.updateProjectionMatrix();
   controls.target.set(0, plateY, cz); controls.update();
-  $('#tip2').textContent=(boneRaw?'Split A femur + ':'')+(stlGeo?'B’s implant mesh':'implant')+' · stress map · max bend '+fmt(d.report.displacement_max_mm,2)+' mm';
+
+  // --- bone legend + load-balance score (low coefficient of variation = even pressure) ---
+  let sum=0,sum2=0,cnt=0,bpk=0;
+  for(let x=-plateHalf;x<=plateHalf;x+=Math.max(plateHalf/60,0.5)){ const v=boneSigma(x,boneLen); sum+=v; sum2+=v*v; cnt++; }
+  for(let x=-boneLen/2;x<=boneLen/2;x+=Math.max(boneLen/160,0.5)){ const v=boneSigma(x,boneLen); if(v>bpk)bpk=v; }
+  const mean=cnt?sum/cnt:0, sd=Math.sqrt(Math.max(0,(cnt?sum2/cnt:0)-mean*mean)), cv=mean>1e-9?sd/mean:0, bal=Math.max(0,Math.min(1,1-cv));
+  if($('#balVal')) $('#balVal').textContent=Math.round(bal*100)+'%';
+  $('#bHi').textContent=Math.round(byield)+' MPa'; $('#iHi').textContent=fmt(d.report.peak_von_mises_MPa)+' MPa (peak)';
+  $('#tip2').textContent=(boneRaw?'Split A femur':'bone')+' + B’s implant · two stress maps · bone keeps '+Math.round(phi*100)+'% of its load under the plate';
 }
 
 // ---------------- Blender export (.blend) ----------------
@@ -412,10 +469,12 @@ $('#genBlend').onclick=async ()=>{
       body:JSON.stringify({case:$('#case').value, load:$('#load').value})});
     const d=await res.json();
     if(d.error){ $('#blendStatus').textContent='error: '+d.error; btn.disabled=false; return; }
-    $('#blendPreview').innerHTML=`<img src="${d.png_url}?t=${Date.now()}" alt="stress heat map">`;
+    $('#blendPreview').innerHTML=`<img src="${d.png_url}?t=${Date.now()}" alt="implant + bone stress heat map">`;
     const dl=$('#dlBlend'); dl.href=d.blend_url; dl.style.display='inline-block';
     $('#openBlend').style.display='inline-block';
-    $('#blendStatus').textContent=`done · ${d.blend_name} · peak ${Math.round(d.peak_mpa)} MPa · solver ${d.solver_used}`;
+    let st=`done · ${d.blend_name} · implant peak ${Math.round(d.peak_mpa)} MPa · solver ${d.solver_used}`;
+    if(d.bone){ st+=` · bone load balance ${d.bone.balance}%`; }
+    $('#blendStatus').textContent=st;
   }catch(e){ $('#blendStatus').textContent='error: '+e; }
   btn.disabled=false;
 };
