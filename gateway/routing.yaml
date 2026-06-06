@@ -1,6 +1,12 @@
 # Applied with: tfy apply -f gateway/routing.yaml
-# NOTE: field names follow TrueFoundry's documented config shape. Confirm exact keys
-# against your deployed gateway version before the first apply, then freeze.
+#
+# Tenant: optivia-dev. OpenAI-compatible base:
+#   https://optivia-dev.truefoundry.cloud/api/llm/api/inference/openai/v1
+#
+# Per-stage routing + fallback to AWS Bedrock. The PRIMARY is Claude Sonnet 4.5; if it is
+# rate-limited / unavailable (e.g. Bedrock Anthropic use-case not yet approved on the account),
+# the call degrades to Llama 3.3 70B on Bedrock. This same primary->fallback order is enforced
+# in code (common/llm.py FALLBACK_CHAIN) so resilience holds even without the gateway rule.
 name: implant-routing
 type: gateway-load-balancing-config
 rules:
@@ -9,14 +15,14 @@ rules:
       metadata:
         stage: localize
     load_balance_targets:
-      - target: bedrock/claude-sonnet
+      - target: aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0
         weight: 100
         fallback: true
-      - target: bedrock/llama-70b
+      - target: aws-bedrock/us.meta.llama3-3-70b-instruct-v1-0
         weight: 0
         fallback: true
     model_configs:
-      - target: bedrock/claude-sonnet
+      - target: aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0
         max_failures: 3
         cooldown_seconds: 300
 
@@ -25,14 +31,14 @@ rules:
       metadata:
         stage: synthesize
     load_balance_targets:
-      - target: bedrock/claude-sonnet
+      - target: aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0
         weight: 100
         fallback: true
-      - target: bedrock/mistral-large
+      - target: aws-bedrock/us.meta.llama3-3-70b-instruct-v1-0
         weight: 0
         fallback: true
     model_configs:
-      - target: bedrock/claude-sonnet
+      - target: aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0
         max_failures: 3
         cooldown_seconds: 300
 
@@ -41,13 +47,13 @@ rules:
       metadata:
         stage: evaluate
     load_balance_targets:
-      - target: bedrock/claude-sonnet
+      - target: aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0
         weight: 100
         fallback: true
-      - target: bedrock/llama-70b
+      - target: aws-bedrock/us.meta.llama3-3-70b-instruct-v1-0
         weight: 0
         fallback: true
     model_configs:
-      - target: bedrock/claude-sonnet
+      - target: aws-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1-0
         max_failures: 3
         cooldown_seconds: 300
