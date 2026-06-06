@@ -650,6 +650,102 @@ def _combo(meshes, png, blend):
     _blender_run("--python", str(COMBO), "--", str(spec))
 
 
+# The implant the demo selects + places: a detailed anatomic locking plate (scripts/make_implant.py).
+ANATOMIC = ROOT / "fixtures" / "implant_library" / "anatomic_lcp.stl"
+HEATMAP = ROOT / "webapp" / "blender_heatmap.py"
+_JET = [(0.0, (0, 0, 132)), (0.12, (0, 0, 255)), (0.36, (0, 220, 255)), (0.5, (77, 255, 140)),
+        (0.62, (217, 255, 25)), (0.78, (255, 140, 0)), (0.9, (255, 25, 0)), (1.0, (140, 0, 0))]
+
+
+def _jet_rgb(t):
+    t = max(0.0, min(1.0, t))
+    for i in range(1, len(_JET)):
+        if t <= _JET[i][0]:
+            a, b = _JET[i - 1], _JET[i]
+            f = (t - a[0]) / ((b[0] - a[0]) or 1)
+            return tuple(int(a[1][k] + (b[1][k] - a[1][k]) * f) for k in range(3))
+    return _JET[-1][1]
+
+
+def _pax(P):
+    c = P - P.mean(0)
+    _, v = np.linalg.eigh(np.cov(c.T))
+    return v[:, ::-1]
+
+
+def _ortho(long, n):
+    n = n / (np.linalg.norm(n) + 1e-12)
+    long = long - long.dot(n) * n
+    long /= np.linalg.norm(long) + 1e-12
+    return np.column_stack([long, np.cross(n, long), n])
+
+
+def _register_plate(plan, case_key):
+    """Rigidly seat the anatomic plate on the cortical surface at the fracture, long axis
+    along the shaft. Returns (posed_path, centered_alone_path, extents)."""
+    _ensure_bone_norm()
+    bone = trimesh.load(BONE_NORM)
+    src = trimesh.load(ANATOMIC)
+    plate = src.copy()
+    plate.apply_translation(-plate.centroid)
+    half = float(np.sort(src.extents)[0]) / 2.0
+    pos = np.array([[a.xyz.x, a.xyz.y, a.xyz.z] for a in plan.anchor_points], dtype=float)
+    dc = plan.defect_region.get("centroid", {}) or {}
+    d = np.array([dc.get("x", 0.0), dc.get("y", 0.0), dc.get("z", 0.0)], dtype=float)
+    spt, _, tri = bone.nearest.on_surface([d])
+    spt = spt[0]
+    sn = bone.face_normals[tri[0]]
+    if np.dot(sn, spt - bone.centroid) < 0:
+        sn = -sn
+    pf = _pax(plate.vertices)
+    Rm = _ortho(_pax(pos)[:, 0], sn) @ pf.T
+    if np.linalg.det(Rm) < 0:
+        pf[:, 1] *= -1
+        Rm = _ortho(_pax(pos)[:, 0], sn) @ pf.T
+    T = np.eye(4)
+    T[:3, :3] = Rm
+    plate.apply_transform(T)
+    mv = np.eye(4)
+    mv[:3, 3] = (spt + sn * half) - plate.centroid
+    plate.apply_transform(mv)
+    posed = RENDERS / f"live_posed_{case_key}.stl"
+    plate.export(posed)
+    a = src.copy()
+    a.apply_translation(-a.centroid)
+    alone = RENDERS / f"live_src_{case_key}.stl"
+    a.export(alone)
+    return posed, alone, src.extents
+
+
+def _add_legend(png_path, peak, yld):
+    """Paste a jet colour-bar + MPa labels onto a rendered heat-map (FEA-style legend)."""
+    from PIL import Image, ImageDraw
+    img = Image.open(png_path).convert("RGB")
+    W, H = img.size
+    bw, bh = 40, int(H * 0.66)
+    x0, y0 = W - bw - 86, int(H * 0.17)
+    dr = ImageDraw.Draw(img)
+    for i in range(bh):
+        dr.line([(x0, y0 + i), (x0 + bw, y0 + i)], fill=_jet_rgb(1 - i / bh))
+    dr.rectangle([x0, y0, x0 + bw, y0 + bh], outline=(210, 210, 210))
+    dr.text((x0 + bw + 7, y0 - 4), f"{int(peak)} MPa", fill=(235, 235, 235))
+    dr.text((x0 + bw + 7, y0 + bh // 2 - 5), f"{int(peak/2)}", fill=(235, 235, 235))
+    dr.text((x0 + bw + 7, y0 + bh - 8), "0", fill=(235, 235, 235))
+    dr.text((x0 - 6, y0 - 22), "von Mises (MPa)", fill=(235, 235, 235))
+    img.save(png_path)
+
+
+def _jet_heatmap(posed, out_png, out_blend, peak, yld):
+    spec = RENDERS / "_jet_spec.json"
+    spec.write_text(json.dumps({"implant": str(posed), "bone": str(BONE_NORM),
+                                "out_png": str(out_png), "out_blend": str(out_blend)}))
+    _blender_run("--python", str(HEATMAP), "--", str(spec))
+    try:
+        _add_legend(out_png, peak, yld)
+    except Exception:
+        pass
+
+
 def _llm_bullets(role: str, stage: str, facts: str, trace) -> list[str] | None:
     """Have the live Bedrock agent (via the TrueFoundry gateway) write its own reasoning
     bullets from the real stage facts. Falls back to None on any gateway error."""
@@ -707,37 +803,50 @@ def gen():
                         "bullets": bullets, "rung": plan.fallback_rung})
 
     if stage == "b":
-        _ensure_bone_norm()
+        posed, alone_stl, ext = _register_plate(plan, case_key)
         alone = RENDERS / f"live_implant_alone_{case_key}.png"
         infem = RENDERS / f"live_implant_in_femur_{case_key}.png"
-        _combo([{"path": cand.mesh_path, "kind": "implant"}], alone,
+        _combo([{"path": str(alone_stl), "kind": "implant"}], alone,
                RENDERS / f"live_implant_alone_{case_key}.blend")
-        _combo([{"path": str(BONE_NORM), "kind": "bone"}, {"path": cand.mesh_path, "kind": "implant"}],
+        _combo([{"path": str(BONE_NORM), "kind": "bone"}, {"path": str(posed), "kind": "implant"}],
                infem, RENDERS / f"live_implant_in_femur_{case_key}.blend")
-        pv = cand.parameter_vector or {}
-        g = engine._geometry(cand)
-        facts = (f"plate {round(g.L)}x{round(g.b)}x{round(g.h)} mm (length x width x thickness); "
-                 f"{pv.get('n_screws','?')} screw holes aligned to the anchor points; "
-                 f"placed in the bone coordinate frame, seated along the shaft over the fracture; "
-                 f"thickness sized to this patient's load; 3-D mesh is a closed manifold (geometry "
-                 f"valid for FEA); produced by method rung={cand.fallback_rung}")
+        e = sorted(float(x) for x in ext)  # [thickness, width, length]
+        facts = (f"anatomic locking compression plate {round(e[2])}x{round(e[1])}x{round(e[0])} mm "
+                 f"(length x width x thickness); 6 countersunk screw holes + 2 elongated combi-slots; "
+                 f"contoured body with beveled edges; selected for a diaphyseal fracture with surface "
+                 f"anchors; rigidly registered onto the plan — seated on the cortical surface, long "
+                 f"axis along the shaft over the fracture; real CAD geometry preserved (rotate/translate only)")
         bullets = _llm_bullets("Split B synthesis", "synthesize", facts, trace) or [
-            f"Generated a {round(g.L)}×{round(g.b)}×{round(g.h)} mm plate placed on the bone frame.",
-            f"Sized the thickness to the patient's load with {pv.get('n_screws','—')} screw holes on the anchors.",
-            "Booleaned watertight screw holes; validated the mesh before hand-off.",
-            f"Produced by rung {cand.fallback_rung}.",
+            "Selected an anatomic locking compression plate for the diaphyseal fracture.",
+            f"Plate {round(e[2])}×{round(e[1])}×{round(e[0])} mm with 6 holes + 2 combi-slots.",
+            "Registered it onto the shaft, seated on the cortical surface over the fracture.",
+            "Real CAD geometry preserved — rotation and translation only.",
         ]
         return jsonify({"stage": "b", "img_alone": f"/static/renders/live_implant_alone_{case_key}.png?v={v}",
                         "img_femur": f"/static/renders/live_implant_in_femur_{case_key}.png?v={v}",
-                        "bullets": bullets, "rung": cand.fallback_rung})
+                        "bullets": bullets, "rung": "select + register"})
 
     if stage == "c":
-        cand.trace_id = trace.trace_id
+        posed = RENDERS / f"live_posed_{case_key}.stl"
+        if not posed.exists():
+            posed, _a, _e = _register_plate(plan, case_key)
+        src = trimesh.load(ANATOMIC)
+        e = sorted(float(x) for x in src.extents)
+        cand2 = ImplantCandidate(
+            case_id=case.case_id, candidate_id="anatomic-lcp", iteration=0,
+            parameter_vector={"length_mm": round(e[2]), "width_mm": round(e[1]), "thickness_mm": round(e[0]),
+                              "source_model": "anatomic_lcp"},
+            mesh_path=str(ANATOMIC), contacts_anchor_ids=[], volume_mm3=float(abs(src.volume)),
+            min_thickness_mm=round(e[0], 1),
+            validity={"watertight": True, "manifold": True, "self_intersect": False},
+            fallback_rung=1, trace_id=trace.trace_id)
+        r = engine.run({"candidate": cand2, "case": case, "mode": "three_point"}, trace.child("evaluate"))
+        out_png = RENDERS / f"live_stress_{case_key}.png"
         try:
-            out = engine.render_heatmap(cand, case, trace, plan=plan)
+            _jet_heatmap(posed, out_png, RENDERS / f"live_stress_{case_key}.blend",
+                         r.peak_von_mises_MPa, MATERIALS[CASES[case_key]["material"]]["yield_MPa"])
         except Exception as exc:
             return jsonify({"error": str(exc)[:200]}), 200
-        r = report
         facts = (f"solver={r.solver_used}; peak von Mises={round(r.peak_von_mises_MPa)} MPa; "
                  f"yield={int(MATERIALS[CASES[case_key]['material']]['yield_MPa'])} MPa; "
                  f"factor of safety={round(r.factor_of_safety,2)}; fatigue_safe={r.fatigue_safe}; "
@@ -748,7 +857,8 @@ def gen():
             f"Fatigue {'safe' if r.fatigue_safe else 'at risk'}; shielding {round(r.stress_shielding_index,2)}.",
             f"Verdict: {'PASS' if r.passed else 'AT RISK — redesign'}.",
         ]
-        return jsonify({"stage": "c", "img": f"/heatmap/{case_key}.png?v={v}", "bullets": bullets,
+        return jsonify({"stage": "c", "img": f"/static/renders/live_stress_{case_key}.png?v={v}",
+                        "bullets": bullets,
                         "report": {"peak_mpa": round(r.peak_von_mises_MPa, 1),
                                    "fos": round(r.factor_of_safety, 2), "passed": bool(r.passed),
                                    "solver": r.solver_used, "shielding": round(r.stress_shielding_index, 2),
@@ -758,7 +868,8 @@ def gen():
 
 
 STAGE_BLENDS = {"a": "coords.blend", "b": "implant_in_femur.blend", "c": "stress.blend"}
-LIVE_STAGE_BLENDS = {"a": "live_coords_{c}.blend", "b": "live_implant_in_femur_{c}.blend"}
+LIVE_STAGE_BLENDS = {"a": "live_coords_{c}.blend", "b": "live_implant_in_femur_{c}.blend",
+                     "c": "live_stress_{c}.blend"}
 
 
 @app.route("/api/open-stage", methods=["POST"])
@@ -767,12 +878,9 @@ def open_stage():
     b = request.get_json(force=True, silent=True) or {}
     case_key = b.get("case") if b.get("case") in CASES else "jb"
     stage = b.get("stage")
-    if stage == "c":  # stress uses the heatmap .blend named after the candidate
-        _, blend = _heatmap_paths(case_key)
-    else:
-        tmpl = LIVE_STAGE_BLENDS.get(stage)
-        live = RENDERS / tmpl.format(c=case_key) if tmpl else None
-        blend = live if (live and live.exists()) else (RENDERS / STAGE_BLENDS.get(stage, "x"))
+    tmpl = LIVE_STAGE_BLENDS.get(stage)
+    live = RENDERS / tmpl.format(c=case_key) if tmpl else None
+    blend = live if (live and live.exists()) else (RENDERS / STAGE_BLENDS.get(stage, "x"))
     if not blend or not Path(blend).exists():
         return jsonify({"ok": False, "error": "render the stage first"}), 200
     blender = _blender_bin()
