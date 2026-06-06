@@ -1,0 +1,29 @@
+{
+  "a": [
+    "Loaded the CT bone mesh and normalized it (recentred to origin, converted to mm).",
+    "Built an anatomical coordinate frame with PCA \u2014 the long axis is aligned to the bone shaft.",
+    "Sampled the cortical surface and rejected any point with wall thickness below 1.5 mm.",
+    "Farthest-point-selected 4 well-spread anchors that bracket the fracture (cortical 11.8\u201379.1 mm).",
+    "Produced by the geometric heuristic (PCA + curvature) rung \u00b7 confidence 0.65."
+  ],
+  "b": [
+    "Inferred the implant family from the inputs: diaphyseal fracture + surface anchors \u2192 locking compression plate.",
+    "Selected a REAL locking compression plate (96 \u00d7 8 \u00d7 3 mm) from the implant library \u2014 not generated from scratch.",
+    "Registered it rigidly onto the plan: long axis along the shaft, seating face on the cortical surface at the fracture.",
+    "Preserved the real CAD geometry \u2014 rotation + translation only; watertight, volume unchanged."
+  ],
+  "c": [
+    "Ran 3-point-bending FEA (full_fea) on the placed implant under the walking load (700 N).",
+    "Peak von Mises 1142 MPa vs yield 830 MPa \u2192 factor of safety 0.7\u00d7.",
+    "Fatigue at risk vs the endurance limit; stress-shielding index 0.91.",
+    "Verdict: FAIL \u2014 the mini-fragment plate is under-built for a femur load."
+  ],
+  "report": {
+    "peak_mpa": 1141.8,
+    "fos": 0.73,
+    "passed": false,
+    "solver": "full_fea",
+    "shielding": 0.91,
+    "fatigue_safe": false
+  }
+}

@@ -603,6 +603,29 @@ def heatmap_blend(case_id):
     )
 
 
+STAGE_BLENDS = {"a": "coords.blend", "b": "implant_in_femur.blend", "c": "stress.blend"}
+
+
+@app.route("/api/open-stage", methods=["POST"])
+def open_stage():
+    """Open the pre-rendered Blender file for a demo stage (A coords / B implant / C stress)."""
+    b = request.get_json(force=True, silent=True) or {}
+    fn = STAGE_BLENDS.get(b.get("stage"))
+    if not fn:
+        return jsonify({"ok": False, "error": "unknown stage"}), 200
+    blend = ROOT / "webapp" / "static" / "renders" / fn
+    if not blend.exists():
+        return jsonify({"ok": False, "error": "render not found — run make_demo_renders.py"}), 200
+    blender = _blender_bin()
+    if not (os.path.exists(blender) or shutil.which(blender)):
+        return jsonify({"ok": False, "error": "Blender not found"}), 200
+    try:
+        subprocess.Popen([blender, str(blend)])
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 200
+    return jsonify({"ok": True})
+
+
 @app.route("/api/open-blender", methods=["POST"])
 def open_blender():
     """Launch the local Blender GUI with the rendered .blend so the user sees the model."""

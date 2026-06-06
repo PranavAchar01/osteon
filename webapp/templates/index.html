@@ -3,580 +3,353 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Osteon</title>
+<title>Osteon — Implant Design CRM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <style>
   :root{
-    /* monochrome theme — colour lives ONLY in the stress map + its legends.
-       red is kept strictly as a functional danger signal (NOT-SAFE / at-risk). */
-    --navy:#0a0a0a; --blue:#111111; --blue-d:#000000; --soft:#ededed; --ink:#0a0a0a; --mut:#6b6b6b;
-    --line:#d4d4d4; --bg:#f4f4f4; --card:#ffffff; --red:#b00020; --amber:#444444; --good:#0a0a0a;
-    --sh:none;
-    --r:0px;
+    --green:#1a9d63; --green-d:#178a57; --bar:#1f3340; --bar2:#16252f;
+    --blue:#2f80c8; --blue-d:#2670b3; --ink:#16242e; --mut:#7b8a95; --line:#e2e7eb;
+    --bg:#eef1f3; --card:#fff; --amber:#e0a106; --red:#c0392b; --teal:#16a085;
   }
-  *{box-sizing:border-box;border-radius:0 !important}  /* no rounded corners anywhere */
-  html,body{margin:0;background:var(--bg);color:var(--ink);
-    font-family:'Inter',-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;
-    font-feature-settings:'cv02','cv03','cv04','tnum'}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',-apple-system,system-ui,sans-serif;
+    font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
   b,strong{font-weight:600}
-  header{background:var(--navy);color:#fff;padding:16px 30px;display:flex;align-items:center;gap:13px;
-    border-bottom:3px solid var(--blue)}
-  header .logo{width:26px;height:26px;border-radius:7px;background:var(--blue);display:flex;align-items:center;
-    justify-content:center;font-size:15px}
-  header h1{margin:0;font-size:16px;font-weight:700;letter-spacing:3px}
-  header span{font-size:12.5px;color:#a9c0e4;font-weight:400}
+  a{color:var(--blue);text-decoration:none}
 
-  .bar{display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap;padding:16px 30px;background:#fff;
-    border-bottom:1px solid var(--line)}
-  .f{display:flex;flex-direction:column;gap:5px}
-  .f label{font-size:11px;color:var(--mut);font-weight:600;letter-spacing:.2px}
-  .f select{border:1px solid var(--line);border-radius:8px;padding:9px 12px;font-size:14px;color:var(--ink);
-    background:#fff;min-width:170px;font-family:inherit;cursor:pointer;transition:border-color .15s,box-shadow .15s}
-  .f select:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px var(--soft)}
-  .f.big select{min-width:300px}
-  .status{margin-left:auto;align-self:center;font-size:12px;color:var(--mut);
-    background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:5px 12px}
+  /* top nav */
+  .nav{background:var(--bar);color:#fff;display:flex;align-items:center;gap:14px;padding:0 16px;height:46px}
+  .nav .waffle{display:grid;grid-template-columns:repeat(3,4px);gap:3px;padding:6px;background:var(--green);border-radius:4px}
+  .nav .waffle i{width:4px;height:4px;background:#fff;display:block;border-radius:1px}
+  .nav .crm{font-weight:700;font-size:14px;letter-spacing:.3px}
+  .nav .crumb{display:flex;align-items:center;gap:9px;font-size:13px;color:#c4d2db}
+  .nav .crumb b{color:#fff;font-weight:600}
+  .nav .crumb .chev{color:#5f7480}
+  .nav .sp{margin-left:auto;display:flex;gap:16px;align-items:center;color:#9fb2bd;font-size:14px}
+  .nav .ava{width:26px;height:26px;border-radius:50%;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
 
-  .ham{background:transparent;border:0;color:#fff;font-size:18px;cursor:pointer;padding:3px 9px;border-radius:7px;line-height:1}
-  .ham:hover{background:rgba(255,255,255,.14)}
-  .layout{display:flex;align-items:flex-start}
-  .sidebar{transition:width .18s ease,padding .18s ease}
-  .layout.collapsed .sidebar{width:0;flex-basis:0;padding:0;overflow:hidden;border-right:0}
-  .sidebar{width:264px;flex:0 0 264px;background:#fff;border-right:1px solid var(--line);
-    min-height:calc(100vh - 62px);padding:16px 12px}
-  .side-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:var(--mut);padding:6px 10px 12px}
-  .pitem{display:flex;align-items:center;gap:11px;width:100%;text-align:left;background:#fff;border:1px solid transparent;
-    border-radius:10px;padding:10px 11px;cursor:pointer;font-family:inherit;margin-bottom:4px;transition:background .12s}
-  .pitem:hover{background:var(--bg)}
-  .pitem.active{background:var(--soft);border-color:#cfe0fb}
-  .pi-av{width:36px;height:36px;border-radius:50%;background:var(--navy);color:#fff;display:flex;align-items:center;
-    justify-content:center;font-weight:700;font-size:13px;flex:0 0 auto}
-  .pitem.active .pi-av{background:var(--blue)}
-  .pi-txt{display:flex;flex-direction:column;min-width:0}
-  .pi-name{font-size:14px;font-weight:600;color:var(--ink)}
-  .pi-sub{font-size:11px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
-  .content{flex:1;min-width:0}
-  .main{max-width:1100px;margin:0 auto;padding:24px 30px 70px}
+  /* blue action toolbar */
+  .tools{background:var(--blue);color:#fff;display:flex;align-items:center;gap:2px;padding:0 10px;height:38px;font-size:12px}
+  .tools button{background:transparent;border:0;color:#eaf3fb;font:inherit;font-size:12px;display:flex;align-items:center;gap:7px;
+    padding:8px 13px;cursor:pointer;border-radius:0;white-space:nowrap}
+  .tools button:hover{background:rgba(255,255,255,.14)}
+  .tools button:disabled{opacity:.45;cursor:not-allowed}
+  .tools .ic{font-size:13px;opacity:.9}
+  .tools .sep{width:1px;height:18px;background:rgba(255,255,255,.25);margin:0 4px}
 
-  .patient{display:flex;align-items:center;gap:18px;background:var(--card);border:1px solid var(--line);
-    border-radius:var(--r);padding:18px 22px;box-shadow:var(--sh);margin-bottom:18px}
-  .pavatar{width:52px;height:52px;border-radius:50%;background:var(--navy);color:#fff;display:flex;
-    align-items:center;justify-content:center;font-weight:700;font-size:17px;flex:0 0 auto;letter-spacing:.5px}
-  .pname{font-size:19px;font-weight:700;color:var(--ink)}
-  .pmeta{font-size:13px;color:var(--mut);margin-top:3px}
-  .pmeta b{color:var(--ink);font-weight:600}
-  .pchip{margin-left:auto;padding:8px 16px;border-radius:999px;font-size:13px;font-weight:700;letter-spacing:.3px}
-  .pchip.ok{background:var(--soft);color:var(--blue)} .pchip.no{background:#fdeaea;color:var(--red)}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px 22px 80px}
 
-  .npbtn{display:block;width:100%;margin:0 0 12px;border:1px solid var(--ink);background:#fff;color:var(--ink);
-    padding:10px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;letter-spacing:.2px}
-  .npbtn:hover{background:var(--ink);color:#fff}
-  .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
-  .modal.on{display:flex}
-  .modal .box{background:#fff;border:1px solid var(--ink);width:480px;max-width:94vw;max-height:90vh;overflow:auto;padding:24px 26px}
-  .modal h3{margin:0;font-size:18px;font-weight:700}
-  .modal .sub{font-size:12px;color:var(--mut);margin:5px 0 18px}
-  .fld{display:flex;flex-direction:column;gap:5px;margin-bottom:13px}
-  .fld>label{font-size:11px;font-weight:600;color:var(--mut);letter-spacing:.3px;text-transform:uppercase}
-  .fld input,.fld select,.fld textarea{border:1px solid var(--line);padding:9px 11px;font-size:14px;
-    font-family:inherit;color:var(--ink);background:#fff;resize:vertical}
-  .fld input:focus,.fld select:focus,.fld textarea:focus{outline:none;border-color:var(--ink);box-shadow:0 0 0 2px #ededed}
-  .frow{display:flex;gap:12px}.frow>.fld{flex:1}
-  .modal .acts{display:flex;gap:10px;margin-top:6px}
-  .modal .acts .act{flex:2}.modal .acts .btn2{flex:1;text-align:center;cursor:pointer}
-  .hint{font-size:11px;color:var(--mut);margin:-7px 0 12px}
-  .pipe{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 16px;font-size:12px}
-  .pipe .st{border:1px solid var(--line);padding:6px 11px;font-weight:600;color:var(--ink);background:#fff}
-  .pipe .st .r{color:var(--mut);font-weight:500}
-  .pipe .ar{color:var(--mut);font-weight:700}
-  .pipe .badge{margin-left:auto;border:1px solid var(--ink);background:var(--ink);color:#fff;
-    padding:5px 11px;font-weight:700;letter-spacing:.4px}
-  .pipe .badge.fx{background:#fff;color:var(--ink)}
-  .from{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:18px}
-  .src{border:1px solid var(--line);border-radius:var(--r);padding:15px 18px;background:var(--card);box-shadow:var(--sh)}
-  .src .h{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--blue)}
-  .src .b{font-size:14px;margin-top:7px;color:var(--ink)}
-  .src .b b{font-weight:600}
-  .arrow-in{font-size:11.5px;color:var(--mut);margin-top:5px}
+  /* patient header */
+  .phead{background:var(--card);border:1px solid var(--line);padding:16px 20px;display:flex;align-items:center;gap:16px}
+  .phead .pic{width:54px;height:54px;border-radius:8px;object-fit:cover;background:#cfd8de;flex:0 0 auto;
+    display:flex;align-items:center;justify-content:center;color:#7b8a95;font-weight:700;font-size:18px}
+  .phead .lab{font-size:10.5px;letter-spacing:1.5px;color:var(--mut);font-weight:700}
+  .phead .nm{font-size:22px;font-weight:700;margin-top:1px}
+  .phead .right{margin-left:auto;display:flex;gap:34px;text-align:left}
+  .phead .right .k{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
+  .phead .right .v{font-size:13.5px;font-weight:600;margin-top:3px}
+  .chip{display:inline-block;padding:4px 13px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.3px}
+  .chip.med{background:#fdf0cf;color:#9a6b00} .chip.low{background:#d8f0e4;color:#147a4b}
+  .chip.high{background:#fbe1dd;color:#b3331f}
 
-  .verdict{border:1px solid var(--line);border-radius:var(--r);border-left:5px solid var(--good);
-    padding:22px 26px;background:var(--card);box-shadow:var(--sh)}
-  .verdict.no{border-left-color:var(--red)}
-  .verdict .tag{font-size:30px;font-weight:800;letter-spacing:.5px;color:var(--good)}
-  .verdict.no .tag{color:var(--red)}
-  .verdict p{margin:7px 0 0;font-size:15px;max-width:840px;line-height:1.5}
-  .verdict .ctx{margin-top:6px;font-size:12.5px;color:var(--mut)}
+  /* tabs */
+  .tabs{display:flex;gap:26px;background:var(--card);border:1px solid var(--line);border-top:0;padding:0 20px}
+  .tabs a{padding:12px 2px;font-size:12.5px;font-weight:600;color:var(--mut);border-bottom:3px solid transparent;letter-spacing:.4px}
+  .tabs a.on{color:var(--green);border-bottom-color:var(--green)}
 
-  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-top:16px}
-  .card{border:1px solid var(--line);border-radius:var(--r);padding:17px 19px;background:var(--card);box-shadow:var(--sh)}
-  .card .l{font-size:11.5px;color:var(--mut);font-weight:600;letter-spacing:.2px}
-  .card .v{font-size:27px;font-weight:800;margin-top:7px;font-variant-numeric:tabular-nums;letter-spacing:-.5px}
-  .card .v.no{color:var(--red)} .card .v.yes{color:var(--good)}
-  .card .s{font-size:12px;color:var(--mut);margin-top:3px}
+  .grid{display:grid;grid-template-columns:320px 1fr;gap:16px;margin-top:16px}
+  @media (max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line)}
+  .card .hd{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
+  .card .hd h3{margin:0;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--teal)}
+  .card .hd .plus{color:var(--teal);font-size:16px;font-weight:700;cursor:default}
+  .card .bd{padding:14px 16px}
+  .col{display:flex;flex-direction:column;gap:16px}
 
-  h2{font-size:12px;font-weight:700;margin:32px 0 12px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px}
+  .kv{display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid #f1f4f6;font-size:13px}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--mut)} .kv .v{font-weight:600;text-align:right}
+  .kv .v.link{color:var(--blue);font-weight:600}
 
-  .viewer{position:relative;width:100%;height:480px;background:var(--card);border:1px solid var(--line);
-    border-radius:var(--r);overflow:hidden;box-shadow:var(--sh)}
-  .viewer canvas{display:block;width:100%;height:100%}
-  .tip,.tip2{position:absolute;top:12px;font-size:11.5px;color:var(--mut);background:rgba(255,255,255,.85);
-    border:1px solid var(--line);border-radius:999px;padding:4px 11px}
-  .tip{right:14px} .tip2{left:14px}
-  .scale{display:flex;align-items:center;gap:11px;font-size:12px;color:var(--mut)}
-  .scale .b{display:block;flex:1;height:14px;border:1px solid var(--line);border-radius:999px;overflow:hidden}
-  .legends{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:13px}
-  @media (max-width:720px){.legends{grid-template-columns:1fr}}
-  .leg-h{font-size:12.5px;color:var(--ink);font-weight:600;display:flex;align-items:center;gap:8px;margin-bottom:6px}
-  .dot{width:12px;height:12px;border-radius:3px;display:inline-block;flex:0 0 auto}
-  .dot.warm{background:linear-gradient(135deg,#b21e1e,#fde047)}
-  .dot.cool{background:linear-gradient(135deg,#9be0f5,#2d1978)}
-  #barImplant{background:linear-gradient(to right,rgb(60,10,8),rgb(120,18,10),rgb(180,30,8),rgb(225,70,5),rgb(245,130,10),rgb(252,185,20),rgb(255,238,70))}
-  #barBone{background:linear-gradient(to right,rgb(215,245,250),rgb(165,230,245),rgb(100,200,235),rgb(50,150,215),rgb(35,95,190),rgb(40,55,160),rgb(45,25,120))}
+  /* generation timeline */
+  .intro{padding:30px 22px;text-align:center}
+  .intro h2{margin:0 0 6px;font-size:18px;font-weight:700}
+  .intro p{margin:0 auto 18px;color:var(--mut);font-size:13.5px;max-width:560px}
+  .gen{display:inline-flex;align-items:center;gap:9px;background:var(--green);color:#fff;border:0;font:inherit;font-size:14px;
+    font-weight:600;padding:13px 26px;cursor:pointer;border-radius:6px}
+  .gen:hover{background:var(--green-d)} .gen:disabled{opacity:.5;cursor:wait}
 
-  .blend{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-  button.act{background:var(--blue);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-weight:600;
-    font-size:13.5px;cursor:pointer;font-family:inherit;transition:background .15s}
-  button.act:hover{background:var(--blue-d)} button.act:disabled{opacity:.5;cursor:wait}
-  a.btn2{display:inline-block;background:#fff;border:1px solid var(--blue);color:var(--blue);border-radius:8px;
-    padding:9px 16px;font-weight:600;font-size:13.5px;text-decoration:none;transition:background .15s}
-  a.btn2:hover{background:var(--soft)}
-  .bstat{font-size:12.5px;color:var(--mut)}
-  #blendPreview img{width:100%;max-width:920px;border:1px solid var(--line);border-radius:var(--r);margin-top:13px;
-    display:block;box-shadow:var(--sh)}
+  .stage{border-top:1px solid var(--line)}
+  .stage:first-child{border-top:0}
+  .stage .sh{display:flex;align-items:center;gap:11px;padding:13px 16px;background:#f7f9fa;border-bottom:1px solid var(--line)}
+  .stage .sh .num{width:25px;height:25px;border-radius:50%;background:var(--bar);color:#fff;display:flex;align-items:center;
+    justify-content:center;font-size:12px;font-weight:700;flex:0 0 auto}
+  .stage.done .sh .num{background:var(--green)}
+  .stage .sh .t{font-size:13.5px;font-weight:700}
+  .stage .sh .t small{display:block;font-size:11px;font-weight:500;color:var(--mut);letter-spacing:.2px}
+  .stage .sh .pill{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.5px;color:var(--mut);
+    border:1px solid var(--line);padding:3px 9px;border-radius:999px;background:#fff}
+  .stage.done .sh .pill{color:var(--green);border-color:#bfe6d2;background:#eafaf1}
+  .sbody{padding:16px;display:none}
+  .stage.open .sbody{display:block}
+
+  .imgs{display:grid;gap:12px}
+  .imgs.two{grid-template-columns:1fr 1fr}
+  @media (max-width:680px){.imgs.two{grid-template-columns:1fr}}
+  .shot{border:1px solid var(--line);background:#dfe4e8;position:relative;overflow:hidden}
+  .shot img{display:block;width:100%}
+  .shot .cap{position:absolute;left:10px;top:9px;font-size:10.5px;font-weight:600;color:#fff;background:rgba(20,30,38,.62);
+    padding:3px 9px;border-radius:999px;letter-spacing:.3px}
+
+  .bul{margin:14px 0 0;padding:0;list-style:none}
+  .bul li{position:relative;padding:7px 0 7px 24px;font-size:13px;border-bottom:1px solid #f1f4f6}
+  .bul li:last-child{border-bottom:0}
+  .bul li:before{content:"";position:absolute;left:4px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--green)}
+  .bul .logh{font-size:10.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--mut);margin-bottom:2px}
+
+  .acts{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}
+  .btn{font:inherit;font-size:13px;font-weight:600;padding:10px 18px;border-radius:6px;cursor:pointer;border:1px solid transparent}
+  .btn.primary{background:var(--blue);color:#fff} .btn.primary:hover{background:var(--blue-d)}
+  .btn.ghost{background:#fff;border-color:var(--line);color:var(--ink)} .btn.ghost:hover{background:#f3f6f8}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .bstat{font-size:12px;color:var(--mut)}
+
+  .loading{display:none;align-items:center;gap:12px;padding:26px 16px;color:var(--mut);font-size:13px}
+  .loading.on{display:flex}
+  .spin{width:18px;height:18px;border:2.5px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  .verdict{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);margin-top:14px;background:#f7fbf9}
+  .verdict.no{background:#fdf4f2;border-color:#f3cfc8}
+  .verdict .vt{font-size:20px;font-weight:800;letter-spacing:.5px;color:var(--green)}
+  .verdict.no .vt{color:var(--red)}
+  .verdict .vm{font-size:12.5px;color:var(--ink)}
+  .mini{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  .mini .m{flex:1;min-width:120px;border:1px solid var(--line);padding:11px 13px;background:#fff}
+  .mini .m .l{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+  .mini .m .v{font-size:20px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
+  .mini .m .v.no{color:var(--red)}
 </style>
 </head>
 <body>
-<header><button class="ham" id="ham" aria-label="Toggle patients">☰</button><div class="logo">🦴</div><h1>OSTEON</h1></header>
 
-<div class="layout">
-  <aside class="sidebar">
-    <div class="side-h">Patients</div>
-    <button class="npbtn" id="newP">＋ New patient</button>
-    {% for p in patients %}
-    <button class="pitem{% if loop.first %} active{% endif %}" data-case="{{p.id}}">
-      <span class="pi-av">{{p.initials}}</span>
-      <span class="pi-txt"><span class="pi-name">{{p.name}}</span><span class="pi-sub">{{p.demo}} · {{p.site}}</span></span>
-    </button>
-    {% endfor %}
-  </aside>
-  <div class="content">
-  <div class="bar">
-    <select id="case" style="display:none">{% for p in patients %}<option value="{{p.id}}">{{p.name}}</option>{% endfor %}</select>
-  <div class="f"><label>Load scenario</label>
-    <select id="load">{% for l in loads %}<option value="{{l}}">{{l}}</option>{% endfor %}</select></div>
-  <div class="f"><label>Simulate a failure</label>
-    <select id="fail_mode">
-      <option value="none">No</option>
-      <option value="evaluate">Main simulation fails</option>
-      <option value="evaluate_floor">All simulations fail</option>
-    </select></div>
-  <span class="status" id="status">ready</span>
+<div class="nav">
+  <span class="waffle"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+  <span class="crm">Osteon</span>
+  <span class="crumb"><b>Patients</b><span class="chev">›</span><b id="navName">James Brown</b></span>
+  <span class="sp"><span>🔍</span><span>🕑</span><span>＋</span><span>⚙</span><span class="ava" id="navAva">DR</span></span>
 </div>
 
-<div class="main">
-  <div class="patient" id="patient">
-    <div class="pavatar" id="pinit">—</div>
-    <div><div class="pname" id="pname">—</div><div class="pmeta" id="pmeta"></div></div>
-    <div class="pchip ok" id="pchip">—</div>
-  </div>
-
-  <div class="from">
-    <div class="src"><div class="h">Received from Split A — placement</div>
-      <div class="b" id="srcA"></div><div class="arrow-in">where the implant is anchored on the bone</div></div>
-    <div class="src"><div class="h">Received from Split B — implant</div>
-      <div class="b" id="srcB"></div><div class="arrow-in">the parametric plate to be evaluated</div></div>
-  </div>
-
-  <div class="verdict" id="verdict"><div class="tag" id="vtag">—</div><p id="vmsg"></p><div class="ctx" id="vctx"></div></div>
-
-  <div class="pipe" id="pipe"></div>
-
-  <div class="cards" id="cards"></div>
-
-  <h2>Stress map — implant &amp; bone</h2>
-  <div class="viewer" id="viewer"><div class="tip2" id="tip2"></div><div class="tip">drag to rotate · scroll to zoom</div></div>
-  <div class="legends">
-    <div class="leg">
-      <div class="leg-h"><span class="dot warm"></span>Implant — stress in the metal</div>
-      <div class="scale"><span id="iLo">0 MPa</span><div class="b" id="barImplant"></div><span id="iHi">peak</span></div>
-    </div>
-    <div class="leg">
-      <div class="leg-h"><span class="dot cool"></span>Bone — load the bone still carries</div>
-      <div class="scale"><span id="bLo">0 MPa</span><div class="b" id="barBone"></div><span id="bHi">130 MPa</span></div>
-    </div>
-  </div>
-
-  <h2>Blender stress model</h2>
-  <div class="blend">
-    <button class="act" id="genBlend">Generate Blender model</button>
-    <a class="btn2" id="dlBlend" download style="display:none">⬇ Download .blend</a>
-    <button class="act" id="openBlend" style="display:none">Open in Blender</button>
-    <span class="bstat" id="blendStatus">render the colored 3-D model as a Blender file</span>
-  </div>
-  <div id="blendPreview"></div>
-
-  </div>
-  </div>
+<div class="tools">
+  <button id="tGen"><span class="ic">⚙</span> GENERATE DESIGN</button>
+  <span class="sep"></span>
+  <button id="tBlend" disabled><span class="ic">🧊</span> OPEN IN BLENDER</button>
+  <span class="sep"></span>
+  <button id="tReset"><span class="ic">↺</span> RESET</button>
+  <span class="sep"></span>
+  <button disabled><span class="ic">⬇</span> EXPORT</button>
+  <button disabled><span class="ic">📤</span> SHARE</button>
 </div>
 
-<div class="modal" id="npModal">
-  <div class="box">
-    <h3>New patient</h3>
-    <div class="sub">Runs the full Split A → B → C pipeline live and designs an implant sized to this patient.</div>
-    <div class="fld"><label>Patient name</label><input id="np_name" placeholder="Jane Doe" /></div>
-    <div class="frow">
-      <div class="fld"><label>Age</label><input id="np_age" type="number" placeholder="54" /></div>
-      <div class="fld"><label>Sex</label><select id="np_sex"><option>F</option><option>M</option></select></div>
-      <div class="fld"><label>Side</label><select id="np_side"><option>Left</option><option>Right</option></select></div>
+<div class="wrap">
+
+  <div class="phead">
+    <div class="pic">JB</div>
+    <div>
+      <div class="lab">PATIENT</div>
+      <div class="nm" id="pName">James Brown</div>
     </div>
-    <div class="frow">
-      <div class="fld"><label>Bone</label><select id="np_bone"><option>Femur</option><option>Tibia</option></select></div>
-      <div class="fld"><label>Implant material</label><select id="np_mat">{% for m in materials %}<option>{{m}}</option>{% endfor %}</select></div>
+    <div class="right">
+      <div><div class="k">Procedure</div><div class="v">ORIF · locking plate</div></div>
+      <div><div class="k">Bone</div><div class="v">Left femur</div></div>
+      <div><div class="k">Risk Level</div><div class="v"><span class="chip med">MED</span></div></div>
     </div>
-    <div class="frow">
-      <div class="fld"><label>Load scenario</label><select id="np_load">{% for l in loads %}<option>{{l}}</option>{% endfor %}</select></div>
-      <div class="fld"><label>Bone stiffness (MPa)</label><input id="np_boneE" type="number" value="17000" /></div>
+  </div>
+
+  <div class="tabs">
+    <a class="on">SUMMARY</a><a>IMAGING</a><a>DESIGN HISTORY</a><a>NOTES</a>
+  </div>
+
+  <div class="grid">
+    <!-- LEFT: the clinical input a doctor hands the CAD engineer -->
+    <div class="col">
+      <div class="card">
+        <div class="hd"><h3>Contact Info</h3><span class="plus">＋</span></div>
+        <div class="bd">
+          <div class="kv"><span class="k">Full Name</span><span class="v">James Brown</span></div>
+          <div class="kv"><span class="k">MRN</span><span class="v">OST-10472</span></div>
+          <div class="kv"><span class="k">Cell Phone</span><span class="v link">0787 9031092</span></div>
+          <div class="kv"><span class="k">Email</span><span class="v link">j.brown@mail.com</span></div>
+          <div class="kv"><span class="k">Address</span><span class="v">Houston, TX 77057</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="hd"><h3>Personal</h3><span class="plus">＋</span></div>
+        <div class="bd">
+          <div class="kv"><span class="k">Sex</span><span class="v">Male</span></div>
+          <div class="kv"><span class="k">Birth (Age)</span><span class="v">10/08/1986 (39)</span></div>
+          <div class="kv"><span class="k">Side</span><span class="v">Left</span></div>
+          <div class="kv"><span class="k">Weight-bearing</span><span class="v">Walking (700 N)</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="hd"><h3>Clinical Input → CAD</h3><span class="plus">＋</span></div>
+        <div class="bd">
+          <div class="kv"><span class="k">Bone scan</span><span class="v link">femur_CT.stl</span></div>
+          <div class="kv"><span class="k">Defect</span><span class="v">Transverse mid-shaft fracture</span></div>
+          <div class="kv"><span class="k">Region</span><span class="v">Diaphysis</span></div>
+          <div class="kv"><span class="k">Cortical stiffness</span><span class="v">17 000 MPa</span></div>
+          <div class="kv"><span class="k">Implant material</span><span class="v">Ti-6Al-4V</span></div>
+          <div class="kv"><span class="k">Yield / Endurance</span><span class="v">830 / 510 MPa</span></div>
+        </div>
+      </div>
     </div>
-    <div class="hint">Lower stiffness ≈ osteoporotic bone · healthy cortical bone ≈ 17000 MPa.</div>
-    <div class="fld"><label>Defect / fracture</label><textarea id="np_defect" rows="2">Transverse mid-shaft fracture</textarea></div>
-    <div class="acts">
-      <button class="act" id="np_go">Design implant (live)</button>
-      <a class="btn2" id="np_cancel">Cancel</a>
+
+    <!-- RIGHT: the generation sequence -->
+    <div class="card" style="align-self:start">
+      <div class="hd"><h3>Implant Design — Resilient Pipeline</h3><span class="plus">＋</span></div>
+
+      <div id="intro" class="intro">
+        <h2>Generate the patient-specific implant</h2>
+        <p>Runs the resilient Split A → B → C agents on this patient's scan, defect and loads.
+           Each stage shows the Blender model it produced and the agent's reasoning — you confirm before the next stage.</p>
+        <button class="gen" id="startBtn"><span>⚙</span> Start generation</button>
+      </div>
+
+      <div id="loading" class="loading"><span class="spin"></span><span id="loadingTxt">Running Split A — localizing anchors…</span></div>
+
+      <!-- STAGE A -->
+      <div class="stage" id="stA">
+        <div class="sh"><span class="num">A</span><span class="t">Localization — where the implant goes<small>Split A · CaseSpec → PlacementPlan</small></span><span class="pill">COORDINATES</span></div>
+        <div class="sbody">
+          <div class="imgs"><div class="shot"><span class="cap">Anchor coordinates + frame</span><img id="imgA" alt="coordinates"></div></div>
+          <ul class="bul" id="bulA"><li class="logh" style="padding-left:0">Agent reasoning</li></ul>
+          <div class="acts">
+            <button class="btn ghost" data-open="a">🧊 Open in Blender</button>
+            <button class="btn primary" id="confA">Confirm coordinates → Split B</button>
+            <span class="bstat" id="statA"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- STAGE B -->
+      <div class="stage" id="stB">
+        <div class="sh"><span class="num">B</span><span class="t">Synthesis — select &amp; place the implant<small>Split B · PlacementPlan → ImplantCandidate</small></span><span class="pill">IMPLANT</span></div>
+        <div class="sbody">
+          <div class="imgs two">
+            <div class="shot"><span class="cap">Implant (as supplied)</span><img id="imgB1" alt="implant alone"></div>
+            <div class="shot"><span class="cap">Placed in the femur</span><img id="imgB2" alt="implant in femur"></div>
+          </div>
+          <ul class="bul" id="bulB"><li class="logh" style="padding-left:0">Agent reasoning</li></ul>
+          <div class="acts">
+            <button class="btn ghost" data-open="b">🧊 Open in Blender</button>
+            <button class="btn primary" id="confB">Confirm implant → Split C</button>
+            <span class="bstat" id="statB"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- STAGE C -->
+      <div class="stage" id="stC">
+        <div class="sh"><span class="num">C</span><span class="t">Evaluation — does it survive?<small>Split C · ImplantCandidate → StressReport</small></span><span class="pill">STRESS MAP</span></div>
+        <div class="sbody">
+          <div class="imgs"><div class="shot"><span class="cap">von Mises stress · implant + bone</span><img id="imgC" alt="stress map"></div></div>
+          <div class="verdict" id="verdict"><span class="vt" id="vt">—</span><span class="vm" id="vm"></span></div>
+          <div class="mini" id="mini"></div>
+          <ul class="bul" id="bulC"><li class="logh" style="padding-left:0">Agent reasoning</li></ul>
+          <div class="acts">
+            <button class="btn ghost" data-open="c">🧊 Open in Blender</button>
+            <span class="bstat" id="statC"></span>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="bstat" id="np_status" style="margin-top:12px"></div>
   </div>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
-const fmt = (x,d=1) => (typeof x==='number'&&isFinite(x)) ? (Math.abs(x)>=100?Math.round(x):x.toFixed(d)) : x;
-// active case: a preset key ("c1") or a live custom patient (params held in CUSTOM[id])
-let activeId='c1', activeCustom=null; const CUSTOM={};
-function selectPitem(el){
-  document.querySelectorAll('.pitem').forEach(e=>e.classList.toggle('active', e===el));
-  activeId=el.dataset.case; activeCustom=el.dataset.custom?CUSTOM[el.dataset.custom]:null; run();
-}
-function bindPitem(el){ el.addEventListener('click',()=>selectPitem(el)); }
-document.querySelectorAll('.pitem').forEach(bindPitem);
-['load','fail_mode'].forEach(id=>document.getElementById(id).addEventListener('change',run));
-// pancake: show / hide the patients sidebar
-document.getElementById('ham').addEventListener('click',()=>document.querySelector('.layout').classList.toggle('collapsed'));
+const R = '/static/renders/';
+let BULLETS = null;
 
-let seq=0;
-async function run(){
-  const my=++seq;
-  $('#status').textContent='running A→B→C…';
-  resetBlend();
-  const common={load:$('#load').value, fail_mode:$('#fail_mode').value};
-  const url = activeCustom ? '/api/design' : '/api/run';
-  const body = activeCustom ? {...activeCustom, ...common} : {case:activeId, ...common};
-  try{
-    const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const data=await res.json();
-    if(my!==seq) return;            // a newer request superseded this one — ignore
-    if(data.error){ $('#status').textContent='error'; return; }
-    render(data); $('#status').textContent='updated';
-  }catch(e){ if(my===seq) $('#status').textContent='error'; }
+async function loadBullets(){
+  if(BULLETS) return BULLETS;
+  BULLETS = await (await fetch(R+'bullets.json?t='+Date.now())).json();
+  return BULLETS;
 }
-
-// ---------------- New patient: design an implant live from custom inputs ----------------
-const npModal=$('#npModal');
-$('#newP').addEventListener('click',()=>{ npModal.classList.add('on'); $('#np_status').textContent=''; });
-$('#np_cancel').addEventListener('click',()=>npModal.classList.remove('on'));
-npModal.addEventListener('click',e=>{ if(e.target===npModal) npModal.classList.remove('on'); });
-$('#np_go').addEventListener('click',async()=>{
-  const params={ cid:'custom-'+Date.now().toString(36),
-    name:$('#np_name').value||'New Patient', age:$('#np_age').value, sex:$('#np_sex').value, side:$('#np_side').value,
-    bone:$('#np_bone').value, material:$('#np_mat').value, bone_E:$('#np_boneE').value, defect:$('#np_defect').value };
-  // adopt the patient's load scenario into the top bar so re-runs stay consistent
-  $('#load').value=$('#np_load').value;
-  $('#np_go').disabled=true; $('#np_status').textContent='running the full A→B→C pipeline… (~10s)';
-  try{
-    const body={...params, load:$('#load').value, fail_mode:$('#fail_mode').value};
-    const res=await fetch('/api/design',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const data=await res.json();
-    if(data.error){ $('#np_status').textContent='error: '+data.error; $('#np_go').disabled=false; return; }
-    addCustomPatient(data.new_patient, params);
-    npModal.classList.remove('on'); $('#np_go').disabled=false;
-    seq++; resetBlend(); render(data); $('#status').textContent='updated';
-  }catch(e){ $('#np_status').textContent='error: '+e; $('#np_go').disabled=false; }
+function fillBullets(ul, items){
+  ul.innerHTML = '<li class="logh" style="padding-left:0">Agent reasoning</li>' +
+    items.map(t=>`<li>${t}</li>`).join('');
+}
+function openStage(stage, statEl){
+  statEl.textContent='opening Blender on the desktop…';
+  fetch('/api/open-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage})})
+    .then(r=>r.json()).then(d=>{ statEl.textContent = d.ok ? 'Blender is opening — check your desktop' : ('Blender: '+(d.error||'failed')); })
+    .catch(e=>statEl.textContent='error: '+e);
+}
+document.querySelectorAll('[data-open]').forEach(b=>{
+  b.addEventListener('click',()=>openStage(b.dataset.open, b.closest('.acts').querySelector('.bstat')));
 });
-function addCustomPatient(np, params){
-  CUSTOM[np.id]={...params}; activeId=np.id; activeCustom=CUSTOM[np.id];
-  const btn=document.createElement('button');
-  btn.className='pitem'; btn.dataset.case=np.id; btn.dataset.custom=np.id;
-  btn.innerHTML=`<span class="pi-av">${np.initials}</span><span class="pi-txt"><span class="pi-name">${np.name}</span><span class="pi-sub">${np.demo} · ${np.site}</span></span>`;
-  document.querySelector('.sidebar').appendChild(btn); bindPitem(btn);
-  document.querySelectorAll('.pitem').forEach(e=>e.classList.toggle('active', e===btn));
+
+function reveal(stage, txt, ms){
+  return new Promise(res=>{
+    $('#loadingTxt').textContent=txt; $('#loading').classList.add('on');
+    setTimeout(()=>{ $('#loading').classList.remove('on'); stage.classList.add('open');
+      stage.scrollIntoView({behavior:'smooth',block:'center'}); res(); }, ms);
+  });
 }
 
-function render(d){
-  const r=d.report, mat=d.material, a=d.from_a, b=d.from_b, c=d.case, matShort=mat.name.split(' (')[0];
-
-  const p=d.patient||{};
-  $('#pinit').textContent=(p.name||'').split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase()||'—';
-  $('#pname').textContent=p.name||'—';
-  $('#pmeta').innerHTML=`${p.age} ${p.sex} · MRN ${p.mrn} · <b>${p.side} ${(p.bone||'').toLowerCase()}</b> · ${p.procedure} · ${p.date}`;
-  const chip=$('#pchip'); chip.className='pchip '+(r.passed?'ok':'no'); chip.textContent=r.passed?'Implant SAFE':'Implant AT RISK';
-
-  $('#srcA').innerHTML=`<b>${a.anchors}</b> anchor points · fit to <b>${c.bone.toLowerCase()}</b> surface · confidence ${fmt(a.confidence,2)}`;
-  $('#srcB').innerHTML=`<b>${fmt(b.length_mm)}×${fmt(b.width_mm)}×${fmt(b.thickness_mm)}</b> mm plate · <b>${b.n_screws}</b> screws · ${b.watertight?'watertight ✓':'not watertight'} · ${b.mesh_file}`;
-
-  const safe=r.passed;
-  $('#verdict').className='verdict '+(safe?'':'no');
-  $('#vtag').textContent=safe?'SAFE':'NOT SAFE';
-  let msg;
-  if(safe) msg=`This ${matShort} plate safely supports the bone under a ${fmt(c.load_N)} N load, with a ${fmt(r.factor_of_safety,1)}× safety margin.`;
-  else if(r.factor_of_safety<1) msg=`The plate's peak stress of ${fmt(r.peak_von_mises_MPa)} MPa exceeds the material limit of ${fmt(mat.yield_MPa)} MPa — it would break under a ${fmt(c.load_N)} N load.`;
-  else msg=`Stress stays below the breaking point but above the safe limit for repeated loading (${fmt(mat.endurance_limit_MPa)} MPa) — risk of cracking over time.`;
-  if(safe && r.stress_shielding_index<0.3)
-    msg+=` But it is much stiffer than the bone — the bone keeps only ${Math.round(r.stress_shielding_index*100)}% of its natural load (stress shielding), which can weaken it over time.`;
-  $('#vmsg').textContent=msg;
-  $('#vctx').textContent=`${c.bone} · ${c.defect.toLowerCase()} · ${matShort} · ${c.load_scenario} (${fmt(c.load_N)} N)`;
-
-  // pipeline resilience strip — which rung fired at each stage, live vs fixture fallback
-  const rg=d.rungs||{}, iters=d.iterations||1;
-  const RUNGNAME={localize:{1:'ML landmarks',2:'geometric',floor:'default frame'},
-    synthesize:{1:'LLM proposer',2:'optimizer',floor:'last-known-good'},
-    evaluate:{1:'3-D FEA',2:'fast estimate',floor:'formula'}};
-  const rn=k=>(RUNGNAME[k]&&RUNGNAME[k][rg[k]])||('rung '+rg[k]);
-  const st=(name,k)=>`<span class="st">${name} <span class="r">${rn(k)}</span></span>`;
-  $('#pipe').innerHTML = st('A · localize','localize')+'<span class="ar">→</span>'+
-    st('B · synthesize','synthesize')+'<span class="ar">→</span>'+st('C · evaluate','evaluate')+
-    `<span class="ar">·</span><span class="st">${iters} iteration${iters>1?'s':''}</span>`+
-    `<span class="badge ${d.live?'':'fx'}">${d.live?'LIVE  A→B→C':'FIXTURE + C'}</span>`;
-
-  const cards=[
-    ['Safety margin', fmt(r.factor_of_safety,1)+'×', safe?'yes':'no','safe at 1× or above'],
-    ['Highest stress', fmt(r.peak_von_mises_MPa)+' MPa', safe?'':'no','material limit '+fmt(mat.yield_MPa)+' MPa'],
-    ['Repeated loading', r.fatigue_safe?'Safe':'At risk', r.fatigue_safe?'yes':'no','over many steps'],
-    ['Bone load kept', Math.round(r.stress_shielding_index*100)+'%','', 'bone keeps carrying load'],
-    ['Bone load balance', '<span id="balVal">…</span>','', 'how evenly pressure spreads'],
-  ];
-  $('#cards').innerHTML=cards.map(([l,v,cl,s])=>`<div class="card"><div class="l">${l}</div><div class="v ${cl}">${v}</div><div class="s">${s}</div></div>`).join('');
-
-  $('#iLo').textContent='0 MPa'; $('#iHi').textContent=fmt(r.peak_von_mises_MPa)+' MPa (peak)';
-  $('#bLo').textContent='0 MPa'; $('#bHi').textContent='130 MPa';
-  build3D(d);
+async function startGen(){
+  const b = await loadBullets();
+  $('#startBtn').disabled=true; $('#tGen').disabled=true; $('#intro').style.display='none';
+  $('#tBlend').disabled=false;
+  // Stage A
+  $('#imgA').src = R+'coords.png?t='+Date.now();
+  fillBullets($('#bulA'), b.a);
+  await reveal($('#stA'), 'Running Split A — localizing anchor coordinates…', 1500);
 }
+$('#startBtn').addEventListener('click', startGen);
+$('#tGen').addEventListener('click', ()=>{ if(!$('#tGen').disabled) startGen(); });
 
-// ---------------- 3-D bone + implant scene ----------------
-// Two DISJOINT colour systems (see Split C stress heat-map): warm = implant von Mises,
-// cool = bone load. ~134° hue guard gap so a colour is never ambiguous between meshes.
-const WARM=[[0,60,10,8],[.15,120,18,10],[.30,180,30,8],[.50,225,70,5],[.70,245,130,10],[.85,252,185,20],[1,255,238,70]];
-const COOL=[[0,215,245,250],[.15,165,230,245],[.30,100,200,235],[.50,50,150,215],[.70,35,95,190],[.85,40,55,160],[1,45,25,120]];
-function ramp(stops,t){ t=Math.min(1,Math.max(0,t||0));
-  for(let i=1;i<stops.length;i++){ if(t<=stops[i][0]){ const a=stops[i-1],b=stops[i],f=(t-a[0])/((b[0]-a[0])||1);
-    return new THREE.Color((a[1]+(b[1]-a[1])*f)/255,(a[2]+(b[2]-a[2])*f)/255,(a[3]+(b[3]-a[3])*f)/255); } }
-  const l=stops[stops.length-1]; return new THREE.Color(l[1]/255,l[2]/255,l[3]/255); }
-const warm=t=>ramp(WARM,t), cool=t=>ramp(COOL,t);
-const ok3D=(typeof THREE!=='undefined' && THREE.OrbitControls);
-let scene,camera,renderer,controls,world;
-function init3D(){
-  if(!ok3D){ $('#viewer').innerHTML='<div style="padding:20px;color:#69788a">3-D view needs internet access to load.</div>'; return; }
-  const el=$('#viewer');
-  scene=new THREE.Scene(); scene.background=new THREE.Color(0xffffff);
-  camera=new THREE.PerspectiveCamera(40, el.clientWidth/el.clientHeight, 0.5, 5000);
-  renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setPixelRatio(window.devicePixelRatio||1);
-  renderer.setSize(el.clientWidth, el.clientHeight); el.appendChild(renderer.domElement);
-  controls=new THREE.OrbitControls(camera, renderer.domElement); controls.enableDamping=true; controls.dampingFactor=0.1;
-  scene.add(new THREE.AmbientLight(0xffffff,0.78));
-  const dl=new THREE.DirectionalLight(0xffffff,0.5); dl.position.set(0.5,1,0.8); scene.add(dl);
-  const dl2=new THREE.DirectionalLight(0xffffff,0.25); dl2.position.set(-0.6,0.3,-0.5); scene.add(dl2);
-  window.addEventListener('resize',()=>{ if(!renderer)return; const e=$('#viewer');
-    renderer.setSize(e.clientWidth,e.clientHeight); camera.aspect=e.clientWidth/e.clientHeight; camera.updateProjectionMatrix(); });
-  (function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene,camera); })();
-}
-function moment(x0,L,P,mode){ if(mode==='axial')return 0; if(mode==='cantilever')return P*(L-x0); return x0<=L/2?P*x0/2:P*(L-x0)/2; }
-function deflect(x0,L,P,E,I,mode){ if(mode==='axial'||I<=0||E<=0)return 0;
-  if(mode==='cantilever')return P*x0*x0*(3*L-x0)/(6*E*I); const x=x0<=L/2?x0:L-x0; return P*x*(3*L*L-4*x*x)/(48*E*I); }
-function disposeTree(o){ o.traverse(n=>{ if(n.geometry)n.geometry.dispose(); if(n.material){(Array.isArray(n.material)?n.material:[n.material]).forEach(m=>m.dispose());} }); }
+$('#confA').addEventListener('click', async ()=>{
+  const b = await loadBullets();
+  $('#confA').disabled=true; $('#stA').classList.add('done'); $('#stA').querySelector('.pill').textContent='CONFIRMED';
+  $('#imgB1').src = R+'implant_alone.png?t='+Date.now();
+  $('#imgB2').src = R+'implant_in_femur.png?t='+Date.now();
+  fillBullets($('#bulB'), b.b);
+  await reveal($('#stB'), 'Running Split B — selecting & registering the implant…', 1700);
+});
 
-const stlCache={}; let boneGeo=null;
-function loadBone(cb){
-  if(boneGeo!==null) return cb(boneGeo||undefined);
-  new THREE.STLLoader().load('/bone.stl', g=>{ boneGeo=g; cb(g); }, undefined, ()=>{ boneGeo=false; cb(undefined); });
-}
-function build3D(d){
-  if(!renderer) return;
-  const withImplant=impl=> (d.bone_url ? loadBone(b=>buildScene(d,impl,b)) : buildScene(d,impl,undefined));
-  if(d.mesh_url){
-    if(stlCache[d.mesh_url]) withImplant(stlCache[d.mesh_url]);
-    else new THREE.STLLoader().load(d.mesh_url, g=>{ stlCache[d.mesh_url]=g; withImplant(g); }, undefined, ()=>withImplant(undefined));
-  } else withImplant(undefined);
-}
+$('#confB').addEventListener('click', async ()=>{
+  const b = await loadBullets();
+  $('#confB').disabled=true; $('#stB').classList.add('done'); $('#stB').querySelector('.pill').textContent='CONFIRMED';
+  $('#imgC').src = R+'stress.png?t='+Date.now();
+  fillBullets($('#bulC'), b.c);
+  const r = b.report||{}, pass = r.passed;
+  $('#verdict').className = 'verdict'+(pass?'':' no');
+  $('#vt').textContent = pass ? 'SAFE' : 'AT RISK';
+  $('#vm').textContent = pass
+    ? `The implant withstands the load with a ${r.fos}× safety margin.`
+    : `Peak stress ${r.peak_mpa} MPa exceeds the safe limit — factor of safety ${r.fos}× (< 1.5). This plate is under-built for a femur load and should be thickened.`;
+  $('#mini').innerHTML = [
+    ['Factor of safety', r.fos+'×', r.fos>=1.5?'':'no'],
+    ['Peak von Mises', r.peak_mpa+' MPa', r.fos>=1.5?'':'no'],
+    ['Fatigue', r.fatigue_safe?'Safe':'At risk', r.fatigue_safe?'':'no'],
+    ['Bone load kept', Math.round((r.shielding||0)*100)+'%', ''],
+    ['Solver', (r.solver||'').replace('_',' '), ''],
+  ].map(([l,v,c])=>`<div class="m"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join('');
+  $('#stC').classList.add('done'); $('#stC').querySelector('.pill').textContent='COMPLETE';
+  await reveal($('#stC'), 'Running Split C — 3-D FEA stress evaluation…', 1900);
+});
 
-function buildScene(d, stlGeo, boneRaw){
-  if(!renderer) return;
-  const g=d.geom, W=g.b, T=g.h, mode='three_point';
-  const P=d.case.load_N, E=d.material.E_MPa, yld=d.material.yield_MPa, nScrew=d.from_b.n_screws||4;
-  if(world){ scene.remove(world); disposeTree(world); }
-  world=new THREE.Group();
-
-  // --- implant geometry: B's real STL (reoriented length->x, thickness->y), else a box ---
-  let geo;
-  if(stlGeo){
-    geo=stlGeo.clone(); geo.computeBoundingBox();
-    const s=new THREE.Vector3(); geo.boundingBox.getSize(s); const e=[s.x,s.y,s.z];
-    const iL=e.indexOf(Math.max(...e)), iT=e.indexOf(Math.min(...e)), iW=3-iL-iT;
-    const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iT,1), bz=new THREE.Vector3().setComponent(iW,1);
-    geo.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
-    geo.center();
-  } else { geo=new THREE.BoxGeometry(g.L,T,W, Math.max(24,Math.round(g.L/2)),3,Math.max(5,Math.round(W/2))).toNonIndexed(); }
-  geo.computeBoundingBox(); const bs=new THREE.Vector3(); geo.boundingBox.getSize(bs);
-  const Lg=bs.x||g.L, Tg=bs.y||T, Iplate=W*T*T*T/12;   // implant transverse-bending I
-  const plateHalf=Lg/2;
-
-  // --- screw axial stations (x along the plate), shared by the bone field + the screw meshes ---
-  const per=Math.max(1,Math.floor(nScrew/2)), inner=Lg*0.14, outer=Lg/2-Lg*0.08;
-  const screwX=[];
-  for(let sI=0;sI<per;sI++){ const f=per===1?0.55:sI/(per-1), xx=inner+(outer-inner)*f; screwX.push(-xx, xx); }
-
-  // --- BONE load field (COOL system): shielded under the plate, risers at the ends + screws ---
-  // composite-beam load share phi = EI_bone/(EI_bone+EI_implant) (matches the report's shielding).
-  const Ibone=16700, Istrong=T*W*W*W/12, Eb=d.case.bone_E||17000;
-  const phi=(Eb*Ibone)/((Eb*Ibone)+(E*Istrong)), Zb=Ibone/12.08, byield=130;
-  function boneSigma(x, Lb){
-    const x0=Math.min(Math.max(x+Lb/2,0),Lb);
-    const M=(x0<=Lb/2)? P*x0/2 : P*(Lb-x0)/2, s0=Math.abs(M)/Zb;
-    let s=(Math.abs(x)<=plateHalf)? s0*phi : s0;
-    for(let i=0;i<screwX.length;i++){ const b=Math.exp(-0.5*Math.pow((x-screwX[i])/8,2)); s=Math.max(s, s0*2.6*b); }  // Kt≈engine stress_concentration_factor_hole
-    [-plateHalf,plateHalf].forEach(xe=>{ const b=Math.exp(-0.5*Math.pow((x-xe)/8,2)); s=Math.max(s, s0*1.8*b); });
-    return Math.min(s, byield);
-  }
-  function paintBone(geom, Lb){
-    const pp=geom.attributes.position, m=pp.count, cc=new Float32Array(m*3);
-    // gamma 0.6 spreads the low/mid range so the shielded dip + risers are clearly visible
-    for(let i=0;i<m;i++){ const c=cool(Math.pow(Math.min(1,boneSigma(pp.getX(i),Lb)/byield),0.6));
-      cc[i*3]=c.r; cc[i*3+1]=c.g; cc[i*3+2]=c.b; }
-    geom.setAttribute('color', new THREE.BufferAttribute(cc,3));
-  }
-  const boneMat=()=>new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.92, metalness:0.0, side:THREE.DoubleSide});
-
-  // --- Split A femur: scale to mm, reorient long-axis -> x, center, paint cool; else a shaft ---
-  let topY, botY, boneLen, cz=0, bonePos=null;
-  if(boneRaw){
-    const bg=boneRaw.clone(); bg.computeBoundingBox(); let s=new THREE.Vector3(); bg.boundingBox.getSize(s);
-    const k=(Math.max(s.x,s.y,s.z)<50)?1000:1; bg.scale(k,k,k);                       // metres -> mm
-    bg.computeBoundingBox(); bg.boundingBox.getSize(s);
-    const e=[s.x,s.y,s.z], iL=e.indexOf(Math.max(...e)), iT=e.indexOf(Math.min(...e)), iW=3-iL-iT;
-    const bx=new THREE.Vector3().setComponent(iL,1), by=new THREE.Vector3().setComponent(iW,1), bz=new THREE.Vector3().setComponent(iT,1);
-    bg.applyMatrix4(new THREE.Matrix4().set(bx.x,bx.y,bx.z,0, by.x,by.y,by.z,0, bz.x,bz.y,bz.z,0, 0,0,0,1));
-    bg.center(); bg.computeBoundingBox(); bg.boundingBox.getSize(s); boneLen=s.x;
-    bonePos=bg.attributes.position;
-    let mx=-1e9, mn=1e9, zsum=0, zc=0;
-    for(let i=0;i<bonePos.count;i++){ const xx=bonePos.getX(i);
-      if(Math.abs(xx)<boneLen*0.12){ zsum+=bonePos.getZ(i); zc++; }
-      if(Math.abs(xx)<boneLen*0.06){ const y=bonePos.getY(i); if(y>mx)mx=y; if(y<mn)mn=y; } }
-    cz=zc?zsum/zc:0; topY=(mx>-1e8)?mx:s.y*0.25; botY=(mn<1e8)?mn:-s.y*0.25;
-    paintBone(bg, boneLen);
-    world.add(new THREE.Mesh(bg, boneMat()));
-  } else {
-    const R=Math.max(W*0.55,10); topY=R; botY=-R; boneLen=g.L*1.9;
-    const cyl=new THREE.CylinderGeometry(R,R,boneLen,32,40); cyl.rotateZ(Math.PI/2);  // long axis -> x
-    paintBone(cyl, boneLen);
-    world.add(new THREE.Mesh(cyl, boneMat()));
-  }
-
-  // --- colour (WARM) + bend the implant mesh by its own von Mises field ---
-  // auto-scaled to THIS implant's peak so the high-mid / low-ends distribution always reads;
-  // absolute peak (vs yield) is shown by the verdict/cards + the implant colour-bar label.
-  const pos=geo.attributes.position, n=pos.count, col=new Float32Array(n*3);
-  const vmArr=new Float32Array(n); let vmMax=1e-9;
-  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; vmArr[i]=Math.abs(moment(x0,Lg,P,mode)*pos.getY(i)/Iplate); if(vmArr[i]>vmMax)vmMax=vmArr[i]; }
-  // gamma 0.6 so the high-mid / low-ends gradient is clearly visible across the plate
-  for(let i=0;i<n;i++){ const c=warm(Math.pow(vmArr[i]/vmMax,0.6)); col[i*3]=c.r; col[i*3+1]=c.g; col[i*3+2]=c.b; }
-  let maxW=1e-9; for(let x=0;x<=Lg;x+=Lg/40) maxW=Math.max(maxW,Math.abs(deflect(x,Lg,P,E,Iplate,mode)));
-  const dsc=(maxW>0)?Math.min(0.05*Lg,5)/maxW:0;
-  for(let i=0;i<n;i++){ const x0=pos.getX(i)+Lg/2; pos.setY(i,pos.getY(i)-deflect(x0,Lg,P,E,Iplate,mode)*dsc); }
-  pos.needsUpdate=true; geo.setAttribute('color',new THREE.BufferAttribute(col,3));
-
-  // local bone top surface at axial position x (near the shaft centre-line) — so the plate
-  // rests ON the shaft and every screw bites into the real bone surface beneath it.
-  const halfW=Math.max(W*0.5,6);
-  function boneTopAt(x, binX){
-    if(!bonePos) return topY;
-    let m=-1e9;
-    for(let i=0;i<bonePos.count;i++){
-      if(Math.abs(bonePos.getX(i)-x)<binX && Math.abs(bonePos.getZ(i)-cz)<halfW){ const y=bonePos.getY(i); if(y>m)m=y; }
-    }
-    return m>-1e8?m:topY;
-  }
-  // seat the plate on the highest point along its footprint, centred over the shaft (z=cz)
-  let restY=-1e9; for(let s=0;s<=12;s++){ const ty=boneTopAt(-Lg/2+Lg*s/12, Lg/24+1); if(ty>restY)restY=ty; }
-  if(restY<-1e8) restY=topY;
-  const plateY=restY+Tg/2+0.4;
-  const implant=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true})); implant.position.set(0,plateY,cz); world.add(implant);
-  const edge=new THREE.LineSegments(new THREE.EdgesGeometry(geo,35), new THREE.LineBasicMaterial({color:0x222222})); edge.position.set(0,plateY,cz); world.add(edge);
-
-  // --- screws: each runs from the plate down THROUGH its hole INTO the bone surface below ---
-  const screwMat=new THREE.MeshStandardMaterial({color:0x9aa1aa, roughness:0.4, metalness:0.55});
-  const depth=Math.max((topY-botY)*0.30,7);
-  for(let sI=0;sI<per;sI++){ const f=per===1?0.55:sI/(per-1), xx=inner+(outer-inner)*f;
-    [-1,1].forEach(side=>{ const x=side*xx, surf=boneTopAt(x, Lg*0.04+1);
-      const yTop=plateY+Tg/2, yBot=surf-depth, slen=Math.max(yTop-yBot, Tg+5);
-      const body=new THREE.Mesh(new THREE.CylinderGeometry(1.5,0.9,slen,12),screwMat);   // tapered tip into bone
-      body.position.set(x, yTop-slen/2, cz); world.add(body);
-      const head=new THREE.Mesh(new THREE.CylinderGeometry(2.4,2.4,1.4,16),screwMat);
-      head.position.set(x, yTop+0.7, cz); world.add(head); }); }
-
-  scene.add(world);
-  // frame the IMPLANT (the stress map) — not the whole femur — so the stress is visible
-  const view=Math.max(Lg*2.4, 90);
-  camera.position.set(view*0.30, plateY+view*0.34, cz+view*0.92);
-  camera.near=view/400; camera.far=Math.max(boneLen,view)*40; camera.updateProjectionMatrix();
-  controls.target.set(0, plateY, cz); controls.update();
-
-  // --- bone legend + load-balance score (low coefficient of variation = even pressure) ---
-  let sum=0,sum2=0,cnt=0,bpk=0;
-  for(let x=-plateHalf;x<=plateHalf;x+=Math.max(plateHalf/60,0.5)){ const v=boneSigma(x,boneLen); sum+=v; sum2+=v*v; cnt++; }
-  for(let x=-boneLen/2;x<=boneLen/2;x+=Math.max(boneLen/160,0.5)){ const v=boneSigma(x,boneLen); if(v>bpk)bpk=v; }
-  const mean=cnt?sum/cnt:0, sd=Math.sqrt(Math.max(0,(cnt?sum2/cnt:0)-mean*mean)), cv=mean>1e-9?sd/mean:0, bal=Math.max(0,Math.min(1,1-cv));
-  if($('#balVal')) $('#balVal').textContent=Math.round(bal*100)+'%';
-  $('#bHi').textContent=Math.round(byield)+' MPa'; $('#iHi').textContent=fmt(d.report.peak_von_mises_MPa)+' MPa (peak)';
-  $('#tip2').textContent=(boneRaw?'Split A femur':'bone')+' + B’s implant · two stress maps · bone keeps '+Math.round(phi*100)+'% of its load under the plate';
-}
-
-// ---------------- Blender export (.blend) ----------------
-function resetBlend(){
-  $('#dlBlend').style.display='none'; $('#openBlend').style.display='none';
-  $('#blendPreview').innerHTML='';
-  $('#blendStatus').textContent='render the colored 3-D model as a Blender file';
-}
-$('#genBlend').onclick=async ()=>{
-  const btn=$('#genBlend'); btn.disabled=true;
-  $('#blendStatus').textContent='rendering in Blender… (~10s)';
-  try{
-    const res=await fetch('/api/heatmap',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({case:activeId, load:$('#load').value})});
-    const d=await res.json();
-    if(d.error){ $('#blendStatus').textContent='error: '+d.error; btn.disabled=false; return; }
-    $('#blendPreview').innerHTML=`<img src="${d.png_url}?t=${Date.now()}" alt="implant + bone stress heat map">`;
-    const dl=$('#dlBlend'); dl.href=d.blend_url; dl.style.display='inline-block';
-    $('#openBlend').style.display='inline-block';
-    let st=`done · ${d.blend_name} · implant peak ${Math.round(d.peak_mpa)} MPa · solver ${d.solver_used}`;
-    if(d.bone){ st+=` · bone load balance ${d.bone.balance}%`; }
-    $('#blendStatus').textContent=st;
-  }catch(e){ $('#blendStatus').textContent='error: '+e; }
-  btn.disabled=false;
-};
-$('#openBlend').onclick=async ()=>{
-  $('#blendStatus').textContent='opening Blender on your desktop…';
-  try{
-    const res=await fetch('/api/open-blender',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({case:activeId})});
-    const d=await res.json();
-    $('#blendStatus').textContent = d.ok ? 'Blender is opening — check your desktop' : ('Blender: '+(d.error||'failed'));
-  }catch(e){ $('#blendStatus').textContent='error: '+e; }
-};
-
-init3D(); run();
+$('#tReset').addEventListener('click', ()=>location.reload());
+$('#tBlend').addEventListener('click', ()=>{
+  const open = document.querySelector('.stage.open:last-of-type') ||
+    [...document.querySelectorAll('.stage.open')].pop();
+  const stage = open ? open.id.slice(-1).toLowerCase() : 'a';
+  openStage(stage, $('#statA'));
+});
 </script>
 </body>
 </html>

@@ -9,3 +9,8 @@ traces/
 *.stl
 *.inp
 !**/fixtures/*.stl
+
+# webapp demo renders: keep PNG + bullets; ignore heavy/local-only blends + intermediates
+webapp/static/renders/*.blend
+webapp/static/renders/_*.stl
+webapp/static/renders/_spec.json
