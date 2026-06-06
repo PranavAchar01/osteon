@@ -14,3 +14,6 @@ traces/
 webapp/static/renders/*.blend
 webapp/static/renders/_*.stl
 webapp/static/renders/_spec.json
+webapp/static/renders/live_*
+webapp/static/renders/_plan_*.json
+webapp/static/renders/_live_spec.json

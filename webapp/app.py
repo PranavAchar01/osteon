@@ -30,6 +30,7 @@ import trimesh
 
 import split_b_synthesis.engine as b_engine
 from common.contracts import CaseSpec, ImplantCandidate, PlacementPlan
+from common.llm import call_llm
 from common.settings import settings
 from common.trace import LoopTrace
 from split_a_localization.engine import run as localize
@@ -91,6 +92,15 @@ CASES = {
         "plan": "placement_plan_test_case_04.json",
         "cand": "implant_candidate_test_case_04.json",
     },
+    "jb": {
+        "label": "Femoral shaft fracture — titanium",
+        "bone": "Femur",
+        "material": "Ti-6Al-4V (titanium alloy)",
+        "bone_E": 17000,
+        "defect": "Transverse mid-shaft fracture",
+        "plan": "placement_plan_test_case_01.json",
+        "cand": "implant_candidate_test_case_01.json",
+    },
 }
 LOADS = {"Walking": 700, "Stair climb": 1500, "Stumble": 2600}
 FAIL_MODES = {"none", "evaluate", "evaluate_floor"}
@@ -126,6 +136,14 @@ PATIENTS = {
         "age": 72,
         "sex": "F",
         "mrn": "OST-40736",
+        "side": "Left",
+        "procedure": "ORIF — locking compression plate",
+    },
+    "jb": {
+        "name": "James Brown",
+        "age": 39,
+        "sex": "M",
+        "mrn": "OST-10472",
         "side": "Left",
         "procedure": "ORIF — locking compression plate",
     },
@@ -603,12 +621,167 @@ def heatmap_blend(case_id):
     )
 
 
+# --------------------------------------------------------------------------- #
+# LIVE staged generation: run the real agents per stage and render their output.
+# --------------------------------------------------------------------------- #
+RENDERS = ROOT / "webapp" / "static" / "renders"
+BONE_NORM = RENDERS / "_bone_norm.stl"
+SA_RENDER = ROOT / "split_a_localization" / "blender_render.py"
+COMBO = ROOT / "webapp" / "blender_combo.py"
+
+
+def _blender_run(*args):
+    subprocess.run([_blender_bin(), "--background", *args], check=True, capture_output=True, text=True)
+
+
+def _ensure_bone_norm():
+    """Bone normalized to the PlacementPlan frame (recenter + m->mm), so a frame-placed
+    implant overlays it (same transform Split A applies)."""
+    if not BONE_NORM.exists():
+        b = trimesh.load(ROOT / "fixtures" / "dummy_bone.stl")
+        b.apply_translation(-b.centroid)
+        b.apply_scale(1000.0)
+        b.export(BONE_NORM)
+
+
+def _combo(meshes, png, blend):
+    spec = RENDERS / "_live_spec.json"
+    spec.write_text(json.dumps({"meshes": meshes, "out_png": str(png), "out_blend": str(blend)}))
+    _blender_run("--python", str(COMBO), "--", str(spec))
+
+
+def _llm_bullets(role: str, stage: str, facts: str, trace) -> list[str] | None:
+    """Have the live Bedrock agent (via the TrueFoundry gateway) write its own reasoning
+    bullets from the real stage facts. Falls back to None on any gateway error."""
+    prompt = (
+        f"You are the {role} agent in a resilient orthopaedic implant-design pipeline. "
+        f"In 4 concise bullet points (max ~16 words each, no preamble, no numbering), explain "
+        f"the reasoning behind your output given these facts:\n{facts}\n"
+        f"Return ONLY the bullets, each on its own line starting with '- '."
+    )
+    try:
+        r = call_llm(stage=stage, messages=[{"role": "user", "content": prompt}],
+                     trace=trace, max_tokens=240)
+        lines = [ln.strip().lstrip("-•* \t") for ln in r.choices[0].message.content.splitlines()]
+        bullets = [ln for ln in lines if len(ln) > 8][:5]
+        return bullets or None
+    except Exception:
+        return None
+
+
+@app.route("/api/gen", methods=["POST"])
+def gen():
+    """Run the LIVE A->B<->C pipeline (real agents on the gateway) and render one stage."""
+    b = request.get_json(force=True, silent=True) or {}
+    case_key = b.get("case") if b.get("case") in CASES else "jb"
+    load_key = b.get("load") if b.get("load") in LOADS else "Walking"
+    fail = b.get("fail_mode") if b.get("fail_mode") in FAIL_MODES else "none"
+    stage = b.get("stage")
+
+    res = _pipeline(case_key, load_key, fail)  # live, cached; never raises
+    plan, cand, report, case = res["plan"], res["cand"], res["report"], res["case"]
+    trace = LoopTrace(case.case_id, stage="webgen")
+    v = f"{case_key}-{load_key}-{Path(cand.mesh_path).stem}"
+
+    if stage == "a":
+        pj = RENDERS / f"_plan_{case_key}.json"
+        pj.write_text(plan.model_dump_json())
+        bone = str(ROOT / "fixtures" / "dummy_bone.stl")
+        png = RENDERS / f"live_coords_{case_key}.png"
+        _blender_run("--python", str(SA_RENDER), "--", str(pj), bone, str(png))
+        _blender_run("--python", str(SA_RENDER), "--", str(pj), bone, str(RENDERS / f"live_coords_{case_key}.blend"))
+        th = [round(a.cortical_thickness_mm, 1) for a in plan.anchor_points]
+        facts = (f"bone=femur; anchors={len(plan.anchor_points)} on cortical surface; "
+                 f"cortical thickness {min(th)}-{max(th)} mm (rejected <1.5 mm); PCA frame along shaft; "
+                 f"method rung={plan.fallback_rung}; confidence={round(plan.confidence,2)}")
+        bullets = _llm_bullets("Split A localization", "localize", facts, trace) or [
+            f"Placed {len(plan.anchor_points)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
+            "Built a PCA coordinate frame aligned to the bone's long axis.",
+            "Farthest-point-spread the anchors to bracket the fracture.",
+            f"Produced by rung {plan.fallback_rung}, confidence {round(plan.confidence,2)}.",
+        ]
+        return jsonify({"stage": "a", "img": f"/static/renders/live_coords_{case_key}.png?v={v}",
+                        "bullets": bullets, "rung": plan.fallback_rung})
+
+    if stage == "b":
+        _ensure_bone_norm()
+        alone = RENDERS / f"live_implant_alone_{case_key}.png"
+        infem = RENDERS / f"live_implant_in_femur_{case_key}.png"
+        _combo([{"path": cand.mesh_path, "kind": "implant"}], alone,
+               RENDERS / f"live_implant_alone_{case_key}.blend")
+        _combo([{"path": str(BONE_NORM), "kind": "bone"}, {"path": cand.mesh_path, "kind": "implant"}],
+               infem, RENDERS / f"live_implant_in_femur_{case_key}.blend")
+        pv = cand.parameter_vector or {}
+        g = engine._geometry(cand)
+        facts = (f"plate {round(g.L)}x{round(g.b)}x{round(g.h)} mm; {pv.get('n_screws','?')} screws; "
+                 f"placed in the bone frame over the fracture; watertight={cand.validity.get('watertight')}; "
+                 f"thickness sized to the patient load; method rung={cand.fallback_rung}")
+        bullets = _llm_bullets("Split B synthesis", "synthesize", facts, trace) or [
+            f"Generated a {round(g.L)}×{round(g.b)}×{round(g.h)} mm plate placed on the bone frame.",
+            f"Sized the thickness to the patient's load with {pv.get('n_screws','—')} screw holes on the anchors.",
+            "Booleaned watertight screw holes; validated the mesh before hand-off.",
+            f"Produced by rung {cand.fallback_rung}.",
+        ]
+        return jsonify({"stage": "b", "img_alone": f"/static/renders/live_implant_alone_{case_key}.png?v={v}",
+                        "img_femur": f"/static/renders/live_implant_in_femur_{case_key}.png?v={v}",
+                        "bullets": bullets, "rung": cand.fallback_rung})
+
+    if stage == "c":
+        cand.trace_id = trace.trace_id
+        try:
+            out = engine.render_heatmap(cand, case, trace, plan=plan)
+        except Exception as exc:
+            return jsonify({"error": str(exc)[:200]}), 200
+        r = report
+        facts = (f"solver={r.solver_used}; peak von Mises={round(r.peak_von_mises_MPa)} MPa; "
+                 f"yield={int(MATERIALS[CASES[case_key]['material']]['yield_MPa'])} MPa; "
+                 f"factor of safety={round(r.factor_of_safety,2)}; fatigue_safe={r.fatigue_safe}; "
+                 f"stress_shielding_index={round(r.stress_shielding_index,2)}; passed={r.passed}")
+        bullets = _llm_bullets("Split C evaluation", "evaluate", facts, trace) or [
+            f"Ran {r.solver_used} 3-point-bending FEA under the {load_key} load.",
+            f"Peak {round(r.peak_von_mises_MPa)} MPa → factor of safety {round(r.factor_of_safety,2)}×.",
+            f"Fatigue {'safe' if r.fatigue_safe else 'at risk'}; shielding {round(r.stress_shielding_index,2)}.",
+            f"Verdict: {'PASS' if r.passed else 'AT RISK — redesign'}.",
+        ]
+        return jsonify({"stage": "c", "img": f"/heatmap/{case_key}.png?v={v}", "bullets": bullets,
+                        "report": {"peak_mpa": round(r.peak_von_mises_MPa, 1),
+                                   "fos": round(r.factor_of_safety, 2), "passed": bool(r.passed),
+                                   "solver": r.solver_used, "shielding": round(r.stress_shielding_index, 2),
+                                   "fatigue_safe": bool(r.fatigue_safe)}})
+
+    return jsonify({"error": "unknown stage"}), 200
+
+
 STAGE_BLENDS = {"a": "coords.blend", "b": "implant_in_femur.blend", "c": "stress.blend"}
+LIVE_STAGE_BLENDS = {"a": "live_coords_{c}.blend", "b": "live_implant_in_femur_{c}.blend"}
 
 
 @app.route("/api/open-stage", methods=["POST"])
 def open_stage():
-    """Open the pre-rendered Blender file for a demo stage (A coords / B implant / C stress)."""
+    """Open the per-stage Blender file in local Blender (live render if present, else preset)."""
+    b = request.get_json(force=True, silent=True) or {}
+    case_key = b.get("case") if b.get("case") in CASES else "jb"
+    stage = b.get("stage")
+    if stage == "c":  # stress uses the heatmap .blend named after the candidate
+        _, blend = _heatmap_paths(case_key)
+    else:
+        tmpl = LIVE_STAGE_BLENDS.get(stage)
+        live = RENDERS / tmpl.format(c=case_key) if tmpl else None
+        blend = live if (live and live.exists()) else (RENDERS / STAGE_BLENDS.get(stage, "x"))
+    if not blend or not Path(blend).exists():
+        return jsonify({"ok": False, "error": "render the stage first"}), 200
+    blender = _blender_bin()
+    if not (os.path.exists(blender) or shutil.which(blender)):
+        return jsonify({"ok": False, "error": "Blender not found"}), 200
+    try:
+        subprocess.Popen([blender, str(blend)])
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:200]}), 200
+    return jsonify({"ok": True})
+
+
+def _open_stage_legacy():
+    """unused — kept for reference."""
     b = request.get_json(force=True, silent=True) or {}
     fn = STAGE_BLENDS.get(b.get("stage"))
     if not fn:

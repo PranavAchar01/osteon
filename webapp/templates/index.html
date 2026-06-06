@@ -270,21 +270,16 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const R = '/static/renders/';
-let BULLETS = null;
+const CASE = 'jb';                       // the featured live patient
+let lastStage = 'a';
 
-async function loadBullets(){
-  if(BULLETS) return BULLETS;
-  BULLETS = await (await fetch(R+'bullets.json?t='+Date.now())).json();
-  return BULLETS;
-}
 function fillBullets(ul, items){
-  ul.innerHTML = '<li class="logh" style="padding-left:0">Agent reasoning</li>' +
+  ul.innerHTML = '<li class="logh" style="padding-left:0">Agent reasoning · live (TrueFoundry → Bedrock)</li>' +
     items.map(t=>`<li>${t}</li>`).join('');
 }
 function openStage(stage, statEl){
   statEl.textContent='opening Blender on the desktop…';
-  fetch('/api/open-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage})})
+  fetch('/api/open-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage, case:CASE})})
     .then(r=>r.json()).then(d=>{ statEl.textContent = d.ok ? 'Blender is opening — check your desktop' : ('Blender: '+(d.error||'failed')); })
     .catch(e=>statEl.textContent='error: '+e);
 }
@@ -292,42 +287,42 @@ document.querySelectorAll('[data-open]').forEach(b=>{
   b.addEventListener('click',()=>openStage(b.dataset.open, b.closest('.acts').querySelector('.bstat')));
 });
 
-function reveal(stage, txt, ms){
-  return new Promise(res=>{
-    $('#loadingTxt').textContent=txt; $('#loading').classList.add('on');
-    setTimeout(()=>{ $('#loading').classList.remove('on'); stage.classList.add('open');
-      stage.scrollIntoView({behavior:'smooth',block:'center'}); res(); }, ms);
-  });
+// run a real agent stage on the server, then reveal it
+async function genStage(stage, txt){
+  $('#loadingTxt').textContent=txt; $('#loading').classList.add('on');
+  try{
+    const res=await fetch('/api/gen',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({stage, case:CASE, load:'Walking', fail_mode:'none'})});
+    const d=await res.json(); $('#loading').classList.remove('on'); return d;
+  }catch(e){ $('#loading').classList.remove('on'); return {error:String(e)}; }
 }
+function open_(stage){ const el=$('#st'+stage.toUpperCase()); el.classList.add('open'); el.scrollIntoView({behavior:'smooth',block:'center'}); }
 
 async function startGen(){
-  const b = await loadBullets();
-  $('#startBtn').disabled=true; $('#tGen').disabled=true; $('#intro').style.display='none';
-  $('#tBlend').disabled=false;
-  // Stage A
-  $('#imgA').src = R+'coords.png?t='+Date.now();
-  fillBullets($('#bulA'), b.a);
-  await reveal($('#stA'), 'Running Split A — localizing anchor coordinates…', 1500);
+  $('#startBtn').disabled=true; $('#tGen').disabled=true; $('#intro').style.display='none'; $('#tBlend').disabled=false;
+  const d=await genStage('a','Running Split A live — the localization agent is placing anchors…');
+  if(d.error){ $('#intro').style.display='block'; $('#startBtn').disabled=false; $('#tGen').disabled=false; alert('Split A failed: '+d.error); return; }
+  $('#imgA').src=d.img; fillBullets($('#bulA'), d.bullets); lastStage='a'; open_('A');
 }
 $('#startBtn').addEventListener('click', startGen);
 $('#tGen').addEventListener('click', ()=>{ if(!$('#tGen').disabled) startGen(); });
 
 $('#confA').addEventListener('click', async ()=>{
-  const b = await loadBullets();
-  $('#confA').disabled=true; $('#stA').classList.add('done'); $('#stA').querySelector('.pill').textContent='CONFIRMED';
-  $('#imgB1').src = R+'implant_alone.png?t='+Date.now();
-  $('#imgB2').src = R+'implant_in_femur.png?t='+Date.now();
-  fillBullets($('#bulB'), b.b);
-  await reveal($('#stB'), 'Running Split B — selecting & registering the implant…', 1700);
+  $('#confA').disabled=true;
+  const d=await genStage('b','Running Split B live — the synthesis agent is selecting & placing the implant…');
+  if(d.error){ $('#confA').disabled=false; alert('Split B failed: '+d.error); return; }
+  $('#stA').classList.add('done'); $('#stA').querySelector('.pill').textContent='CONFIRMED';
+  $('#imgB1').src=d.img_alone; $('#imgB2').src=d.img_femur; fillBullets($('#bulB'), d.bullets); lastStage='b'; open_('B');
 });
 
 $('#confB').addEventListener('click', async ()=>{
-  const b = await loadBullets();
-  $('#confB').disabled=true; $('#stB').classList.add('done'); $('#stB').querySelector('.pill').textContent='CONFIRMED';
-  $('#imgC').src = R+'stress.png?t='+Date.now();
-  fillBullets($('#bulC'), b.c);
-  const r = b.report||{}, pass = r.passed;
-  $('#verdict').className = 'verdict'+(pass?'':' no');
+  $('#confB').disabled=true;
+  const d=await genStage('c','Running Split C live — the evaluation agent is solving the FEA stress field…');
+  if(d.error){ $('#confB').disabled=false; alert('Split C failed: '+d.error); return; }
+  $('#stB').classList.add('done'); $('#stB').querySelector('.pill').textContent='CONFIRMED';
+  $('#imgC').src=d.img; fillBullets($('#bulC'), d.bullets);
+  const r=d.report||{}, pass=r.passed;
+  $('#verdict').className='verdict'+(pass?'':' no');
   $('#vt').textContent = pass ? 'SAFE' : 'AT RISK';
   $('#vm').textContent = pass
     ? `The implant withstands the load with a ${r.fos}× safety margin.`
@@ -340,16 +335,11 @@ $('#confB').addEventListener('click', async ()=>{
     ['Solver', (r.solver||'').replace('_',' '), ''],
   ].map(([l,v,c])=>`<div class="m"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join('');
   $('#stC').classList.add('done'); $('#stC').querySelector('.pill').textContent='COMPLETE';
-  await reveal($('#stC'), 'Running Split C — 3-D FEA stress evaluation…', 1900);
+  lastStage='c'; open_('C');
 });
 
 $('#tReset').addEventListener('click', ()=>location.reload());
-$('#tBlend').addEventListener('click', ()=>{
-  const open = document.querySelector('.stage.open:last-of-type') ||
-    [...document.querySelectorAll('.stage.open')].pop();
-  const stage = open ? open.id.slice(-1).toLowerCase() : 'a';
-  openStage(stage, $('#statA'));
-});
+$('#tBlend').addEventListener('click', ()=>openStage(lastStage, $('#stat'+lastStage.toUpperCase())));
 </script>
 </body>
 </html>
