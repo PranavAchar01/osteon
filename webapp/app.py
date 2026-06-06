@@ -654,14 +654,17 @@ def _llm_bullets(role: str, stage: str, facts: str, trace) -> list[str] | None:
     """Have the live Bedrock agent (via the TrueFoundry gateway) write its own reasoning
     bullets from the real stage facts. Falls back to None on any gateway error."""
     prompt = (
-        f"You are the {role} agent in a resilient orthopaedic implant-design pipeline. "
-        f"In 4 concise bullet points (max ~16 words each, no preamble, no numbering), explain "
-        f"the reasoning behind your output given these facts:\n{facts}\n"
-        f"Return ONLY the bullets, each on its own line starting with '- '."
+        f"You are the {role} agent in an orthopaedic implant-design pipeline. Using ONLY the "
+        f"facts below, write exactly 4 short, clinically accurate bullet points explaining your "
+        f"decision. Rules: state only what the facts support; do NOT invent properties that are "
+        f"not in the facts (no water/sealing, infection, sterility, coatings, biocompatibility). "
+        f"'Closed-manifold mesh' is a 3-D geometry validity check, not a physical seal. Each "
+        f"bullet under ~16 words, plain clinical language.\nFacts:\n{facts}\n"
+        f"Return ONLY the 4 bullets, one per line, each starting with '- '."
     )
     try:
         r = call_llm(stage=stage, messages=[{"role": "user", "content": prompt}],
-                     trace=trace, max_tokens=240)
+                     trace=trace, max_tokens=240, temperature=0.2)
         lines = [ln.strip().lstrip("-•* \t") for ln in r.choices[0].message.content.splitlines()]
         bullets = [ln for ln in lines if len(ln) > 8][:5]
         return bullets or None
@@ -713,9 +716,11 @@ def gen():
                infem, RENDERS / f"live_implant_in_femur_{case_key}.blend")
         pv = cand.parameter_vector or {}
         g = engine._geometry(cand)
-        facts = (f"plate {round(g.L)}x{round(g.b)}x{round(g.h)} mm; {pv.get('n_screws','?')} screws; "
-                 f"placed in the bone frame over the fracture; watertight={cand.validity.get('watertight')}; "
-                 f"thickness sized to the patient load; method rung={cand.fallback_rung}")
+        facts = (f"plate {round(g.L)}x{round(g.b)}x{round(g.h)} mm (length x width x thickness); "
+                 f"{pv.get('n_screws','?')} screw holes aligned to the anchor points; "
+                 f"placed in the bone coordinate frame, seated along the shaft over the fracture; "
+                 f"thickness sized to this patient's load; 3-D mesh is a closed manifold (geometry "
+                 f"valid for FEA); produced by method rung={cand.fallback_rung}")
         bullets = _llm_bullets("Split B synthesis", "synthesize", facts, trace) or [
             f"Generated a {round(g.L)}×{round(g.b)}×{round(g.h)} mm plate placed on the bone frame.",
             f"Sized the thickness to the patient's load with {pv.get('n_screws','—')} screw holes on the anchors.",
