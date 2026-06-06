@@ -6,54 +6,46 @@
 <title>Osteon — Implant Design CRM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <style>
   :root{
-    --green:#1a9d63; --green-d:#178a57; --bar:#1f3340; --bar2:#16252f;
-    --blue:#2f80c8; --blue-d:#2670b3; --ink:#16242e; --mut:#7b8a95; --line:#e2e7eb;
-    --bg:#eef1f3; --card:#fff; --amber:#e0a106; --red:#c0392b; --teal:#16a085;
+    --green:#1a9d63; --green-d:#178a57; --bar:#1f3340; --blue:#2f80c8; --blue-d:#2670b3;
+    --ink:#16242e; --mut:#7b8a95; --line:#e2e7eb; --bg:#eef1f3; --card:#fff;
+    --amber:#e0a106; --red:#c0392b; --teal:#16a085;
+    /* one standardized studio background for every 3-D viewer */
+    --studio:radial-gradient(130% 130% at 50% 26%, #3a444d 0%, #232b32 52%, #121920 100%);
   }
   *{box-sizing:border-box}
-  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',-apple-system,system-ui,sans-serif;
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;
     font-size:13.5px;line-height:1.5;-webkit-font-smoothing:antialiased}
-  b,strong{font-weight:600}
-  a{color:var(--blue);text-decoration:none}
+  b,strong{font-weight:600} a{color:var(--blue);text-decoration:none}
 
-  /* top nav */
   .nav{background:var(--bar);color:#fff;display:flex;align-items:center;gap:14px;padding:0 16px;height:46px}
   .nav .waffle{display:grid;grid-template-columns:repeat(3,4px);gap:3px;padding:6px;background:var(--green);border-radius:4px}
   .nav .waffle i{width:4px;height:4px;background:#fff;display:block;border-radius:1px}
   .nav .crm{font-weight:700;font-size:14px;letter-spacing:.3px}
   .nav .crumb{display:flex;align-items:center;gap:9px;font-size:13px;color:#c4d2db}
-  .nav .crumb b{color:#fff;font-weight:600}
-  .nav .crumb .chev{color:#5f7480}
+  .nav .crumb b{color:#fff} .nav .crumb .chev{color:#5f7480}
   .nav .sp{margin-left:auto;display:flex;gap:16px;align-items:center;color:#9fb2bd;font-size:14px}
   .nav .ava{width:26px;height:26px;border-radius:50%;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
 
-  /* blue action toolbar */
   .tools{background:var(--blue);color:#fff;display:flex;align-items:center;gap:2px;padding:0 10px;height:38px;font-size:12px}
-  .tools button{background:transparent;border:0;color:#eaf3fb;font:inherit;font-size:12px;display:flex;align-items:center;gap:7px;
-    padding:8px 13px;cursor:pointer;border-radius:0;white-space:nowrap}
-  .tools button:hover{background:rgba(255,255,255,.14)}
-  .tools button:disabled{opacity:.45;cursor:not-allowed}
-  .tools .ic{font-size:13px;opacity:.9}
+  .tools button{background:transparent;border:0;color:#eaf3fb;font:inherit;font-size:12px;display:flex;align-items:center;gap:7px;padding:8px 13px;cursor:pointer}
+  .tools button:hover{background:rgba(255,255,255,.14)} .tools button:disabled{opacity:.45;cursor:not-allowed}
   .tools .sep{width:1px;height:18px;background:rgba(255,255,255,.25);margin:0 4px}
 
   .wrap{max-width:1180px;margin:0 auto;padding:18px 22px 80px}
-
-  /* patient header */
   .phead{background:var(--card);border:1px solid var(--line);padding:16px 20px;display:flex;align-items:center;gap:16px}
-  .phead .pic{width:54px;height:54px;border-radius:8px;object-fit:cover;background:#cfd8de;flex:0 0 auto;
-    display:flex;align-items:center;justify-content:center;color:#7b8a95;font-weight:700;font-size:18px}
+  .phead .pic{width:54px;height:54px;border-radius:8px;background:#cfd8de;display:flex;align-items:center;justify-content:center;color:#7b8a95;font-weight:700;font-size:18px}
   .phead .lab{font-size:10.5px;letter-spacing:1.5px;color:var(--mut);font-weight:700}
   .phead .nm{font-size:22px;font-weight:700;margin-top:1px}
-  .phead .right{margin-left:auto;display:flex;gap:34px;text-align:left}
+  .phead .right{margin-left:auto;display:flex;gap:34px}
   .phead .right .k{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.4px}
   .phead .right .v{font-size:13.5px;font-weight:600;margin-top:3px}
-  .chip{display:inline-block;padding:4px 13px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.3px}
-  .chip.med{background:#fdf0cf;color:#9a6b00} .chip.low{background:#d8f0e4;color:#147a4b}
-  .chip.high{background:#fbe1dd;color:#b3331f}
-
-  /* tabs */
+  .chip{display:inline-block;padding:4px 13px;border-radius:999px;font-size:12px;font-weight:700}
+  .chip.med{background:#fdf0cf;color:#9a6b00}
   .tabs{display:flex;gap:26px;background:var(--card);border:1px solid var(--line);border-top:0;padding:0 20px}
   .tabs a{padding:12px 2px;font-size:12.5px;font-weight:600;color:var(--mut);border-bottom:3px solid transparent;letter-spacing:.4px}
   .tabs a.on{color:var(--green);border-bottom-color:var(--green)}
@@ -63,205 +55,148 @@
   .card{background:var(--card);border:1px solid var(--line)}
   .card .hd{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
   .card .hd h3{margin:0;font-size:11.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--teal)}
-  .card .hd .plus{color:var(--teal);font-size:16px;font-weight:700;cursor:default}
-  .card .bd{padding:14px 16px}
-  .col{display:flex;flex-direction:column;gap:16px}
-
+  .card .hd .plus{color:var(--teal);font-size:16px;font-weight:700}
+  .card .bd{padding:14px 16px} .col{display:flex;flex-direction:column;gap:16px}
   .kv{display:flex;justify-content:space-between;gap:14px;padding:7px 0;border-bottom:1px solid #f1f4f6;font-size:13px}
-  .kv:last-child{border-bottom:0}
-  .kv .k{color:var(--mut)} .kv .v{font-weight:600;text-align:right}
-  .kv .v.link{color:var(--blue);font-weight:600}
+  .kv:last-child{border-bottom:0} .kv .k{color:var(--mut)} .kv .v{font-weight:600;text-align:right} .kv .v.link{color:var(--blue)}
 
-  /* generation timeline */
   .intro{padding:30px 22px;text-align:center}
   .intro h2{margin:0 0 6px;font-size:18px;font-weight:700}
-  .intro p{margin:0 auto 18px;color:var(--mut);font-size:13.5px;max-width:560px}
-  .gen{display:inline-flex;align-items:center;gap:9px;background:var(--green);color:#fff;border:0;font:inherit;font-size:14px;
-    font-weight:600;padding:13px 26px;cursor:pointer;border-radius:6px}
+  .intro p{margin:0 auto 18px;color:var(--mut);max-width:560px}
+  .gen{display:inline-flex;align-items:center;gap:9px;background:var(--green);color:#fff;border:0;font:inherit;font-size:14px;font-weight:600;padding:13px 26px;cursor:pointer;border-radius:6px}
   .gen:hover{background:var(--green-d)} .gen:disabled{opacity:.5;cursor:wait}
 
-  .stage{border-top:1px solid var(--line)}
-  .stage:first-child{border-top:0}
+  .stage{border-top:1px solid var(--line)} .stage:first-child{border-top:0}
   .stage .sh{display:flex;align-items:center;gap:11px;padding:13px 16px;background:#f7f9fa;border-bottom:1px solid var(--line)}
-  .stage .sh .num{width:25px;height:25px;border-radius:50%;background:var(--bar);color:#fff;display:flex;align-items:center;
-    justify-content:center;font-size:12px;font-weight:700;flex:0 0 auto}
+  .stage .sh .num{width:25px;height:25px;border-radius:50%;background:var(--bar);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
   .stage.done .sh .num{background:var(--green)}
   .stage .sh .t{font-size:13.5px;font-weight:700}
-  .stage .sh .t small{display:block;font-size:11px;font-weight:500;color:var(--mut);letter-spacing:.2px}
-  .stage .sh .pill{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.5px;color:var(--mut);
-    border:1px solid var(--line);padding:3px 9px;border-radius:999px;background:#fff}
+  .stage .sh .t small{display:block;font-size:11px;font-weight:500;color:var(--mut)}
+  .stage .sh .pill{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.5px;color:var(--mut);border:1px solid var(--line);padding:3px 9px;border-radius:999px;background:#fff}
   .stage.done .sh .pill{color:var(--green);border-color:#bfe6d2;background:#eafaf1}
-  .sbody{padding:16px;display:none}
-  .stage.open .sbody{display:block}
+  .sbody{padding:16px;display:none} .stage.open .sbody{display:block}
 
-  .imgs{display:grid;gap:12px}
-  .imgs.two{grid-template-columns:1fr 1fr}
-  @media (max-width:680px){.imgs.two{grid-template-columns:1fr}}
-  .shot{border:1px solid var(--line);background:#dfe4e8;position:relative;overflow:hidden}
-  .shot img{display:block;width:100%}
-  .shot .cap{position:absolute;left:10px;top:9px;font-size:10.5px;font-weight:600;color:#fff;background:rgba(20,30,38,.62);
-    padding:3px 9px;border-radius:999px;letter-spacing:.3px}
+  /* standardized 3-D viewer: same studio gradient everywhere, drag to rotate */
+  .v3d{position:relative;width:100%;height:430px;background:var(--studio);border:1px solid var(--line);overflow:hidden;cursor:grab}
+  .v3d:active{cursor:grabbing} .v3d canvas{display:block}
+  .v3d .cap{position:absolute;left:12px;top:11px;font-size:11px;font-weight:600;color:#fff;background:rgba(15,22,28,.6);padding:4px 10px;border-radius:999px;z-index:2}
+  .v3d .hint{position:absolute;right:12px;bottom:11px;font-size:10.5px;color:#cdd6dd;background:rgba(15,22,28,.5);padding:3px 9px;border-radius:999px;z-index:2}
+  .v3d .vload{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#cdd6dd;font-size:12px;z-index:3}
+  .legend{position:absolute;right:14px;top:14px;display:flex;gap:7px;z-index:2;color:#e7edf1;font-size:10px}
+  .legend .bar{width:13px;height:200px;border:1px solid rgba(255,255,255,.4);
+    background:linear-gradient(to top,#00008c,#0000ff,#00dcff,#4dff8c,#d9ff19,#ff8c00,#ff1900,#8c0000)}
+  .legend .ticks{display:flex;flex-direction:column;justify-content:space-between;height:200px}
 
   .bul{margin:14px 0 0;padding:0;list-style:none}
   .bul li{position:relative;padding:7px 0 7px 24px;font-size:13px;border-bottom:1px solid #f1f4f6}
   .bul li:last-child{border-bottom:0}
   .bul li:before{content:"";position:absolute;left:4px;top:13px;width:7px;height:7px;border-radius:50%;background:var(--green)}
   .bul .logh{font-size:10.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--mut);margin-bottom:2px}
-
   .acts{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}
   .btn{font:inherit;font-size:13px;font-weight:600;padding:10px 18px;border-radius:6px;cursor:pointer;border:1px solid transparent}
   .btn.primary{background:var(--blue);color:#fff} .btn.primary:hover{background:var(--blue-d)}
   .btn.ghost{background:#fff;border-color:var(--line);color:var(--ink)} .btn.ghost:hover{background:#f3f6f8}
-  .btn:disabled{opacity:.5;cursor:not-allowed}
-  .bstat{font-size:12px;color:var(--mut)}
-
-  .loading{display:none;align-items:center;gap:12px;padding:26px 16px;color:var(--mut);font-size:13px}
-  .loading.on{display:flex}
+  .btn:disabled{opacity:.5;cursor:not-allowed} .bstat{font-size:12px;color:var(--mut)}
+  .loading{display:none;align-items:center;gap:12px;padding:26px 16px;color:var(--mut)} .loading.on{display:flex}
   .spin{width:18px;height:18px;border:2.5px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:sp .8s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
-
   .verdict{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);margin-top:14px;background:#f7fbf9}
   .verdict.no{background:#fdf4f2;border-color:#f3cfc8}
-  .verdict .vt{font-size:20px;font-weight:800;letter-spacing:.5px;color:var(--green)}
-  .verdict.no .vt{color:var(--red)}
-  .verdict .vm{font-size:12.5px;color:var(--ink)}
+  .verdict .vt{font-size:20px;font-weight:800;color:var(--green)} .verdict.no .vt{color:var(--red)}
+  .verdict .vm{font-size:12.5px}
   .mini{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
   .mini .m{flex:1;min-width:120px;border:1px solid var(--line);padding:11px 13px;background:#fff}
-  .mini .m .l{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase;letter-spacing:.3px}
-  .mini .m .v{font-size:20px;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
-  .mini .m .v.no{color:var(--red)}
+  .mini .m .l{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase}
+  .mini .m .v{font-size:20px;font-weight:800;margin-top:4px} .mini .m .v.no{color:var(--red)}
 </style>
 </head>
 <body>
-
 <div class="nav">
   <span class="waffle"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
   <span class="crm">Osteon</span>
-  <span class="crumb"><b>Patients</b><span class="chev">›</span><b id="navName">James Brown</b></span>
-  <span class="sp"><span>🔍</span><span>🕑</span><span>＋</span><span>⚙</span><span class="ava" id="navAva">DR</span></span>
+  <span class="crumb"><b>Patients</b><span class="chev">›</span><b>James Brown</b></span>
+  <span class="sp"><span>🔍</span><span>🕑</span><span>＋</span><span>⚙</span><span class="ava">DR</span></span>
 </div>
-
 <div class="tools">
-  <button id="tGen"><span class="ic">⚙</span> GENERATE DESIGN</button>
-  <span class="sep"></span>
-  <button id="tBlend" disabled><span class="ic">🧊</span> OPEN IN BLENDER</button>
-  <span class="sep"></span>
-  <button id="tReset"><span class="ic">↺</span> RESET</button>
-  <span class="sep"></span>
-  <button disabled><span class="ic">⬇</span> EXPORT</button>
-  <button disabled><span class="ic">📤</span> SHARE</button>
+  <button id="tGen">⚙ GENERATE DESIGN</button><span class="sep"></span>
+  <button id="tReset">↺ RESET</button><span class="sep"></span>
+  <button disabled>⬇ EXPORT</button><button disabled>📤 SHARE</button>
 </div>
 
 <div class="wrap">
-
   <div class="phead">
     <div class="pic">JB</div>
-    <div>
-      <div class="lab">PATIENT</div>
-      <div class="nm" id="pName">James Brown</div>
-    </div>
+    <div><div class="lab">PATIENT</div><div class="nm">James Brown</div></div>
     <div class="right">
       <div><div class="k">Procedure</div><div class="v">ORIF · locking plate</div></div>
       <div><div class="k">Bone</div><div class="v">Left femur</div></div>
       <div><div class="k">Risk Level</div><div class="v"><span class="chip med">MED</span></div></div>
     </div>
   </div>
-
-  <div class="tabs">
-    <a class="on">SUMMARY</a><a>IMAGING</a><a>DESIGN HISTORY</a><a>NOTES</a>
-  </div>
+  <div class="tabs"><a class="on">SUMMARY</a><a>IMAGING</a><a>DESIGN HISTORY</a><a>NOTES</a></div>
 
   <div class="grid">
-    <!-- LEFT: the clinical input a doctor hands the CAD engineer -->
     <div class="col">
-      <div class="card">
-        <div class="hd"><h3>Contact Info</h3><span class="plus">＋</span></div>
-        <div class="bd">
-          <div class="kv"><span class="k">Full Name</span><span class="v">James Brown</span></div>
-          <div class="kv"><span class="k">MRN</span><span class="v">OST-10472</span></div>
-          <div class="kv"><span class="k">Cell Phone</span><span class="v link">0787 9031092</span></div>
-          <div class="kv"><span class="k">Email</span><span class="v link">j.brown@mail.com</span></div>
-          <div class="kv"><span class="k">Address</span><span class="v">Houston, TX 77057</span></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="hd"><h3>Personal</h3><span class="plus">＋</span></div>
-        <div class="bd">
-          <div class="kv"><span class="k">Sex</span><span class="v">Male</span></div>
-          <div class="kv"><span class="k">Birth (Age)</span><span class="v">10/08/1986 (39)</span></div>
-          <div class="kv"><span class="k">Side</span><span class="v">Left</span></div>
-          <div class="kv"><span class="k">Weight-bearing</span><span class="v">Walking (700 N)</span></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="hd"><h3>Clinical Input → CAD</h3><span class="plus">＋</span></div>
-        <div class="bd">
-          <div class="kv"><span class="k">Bone scan</span><span class="v link">femur_CT.stl</span></div>
-          <div class="kv"><span class="k">Defect</span><span class="v">Transverse mid-shaft fracture</span></div>
-          <div class="kv"><span class="k">Region</span><span class="v">Diaphysis</span></div>
-          <div class="kv"><span class="k">Cortical stiffness</span><span class="v">17 000 MPa</span></div>
-          <div class="kv"><span class="k">Implant material</span><span class="v">Ti-6Al-4V</span></div>
-          <div class="kv"><span class="k">Yield / Endurance</span><span class="v">830 / 510 MPa</span></div>
-        </div>
-      </div>
+      <div class="card"><div class="hd"><h3>Contact Info</h3><span class="plus">＋</span></div><div class="bd">
+        <div class="kv"><span class="k">Full Name</span><span class="v">James Brown</span></div>
+        <div class="kv"><span class="k">MRN</span><span class="v">OST-10472</span></div>
+        <div class="kv"><span class="k">Cell Phone</span><span class="v link">0787 9031092</span></div>
+        <div class="kv"><span class="k">Email</span><span class="v link">j.brown@mail.com</span></div>
+        <div class="kv"><span class="k">Address</span><span class="v">Houston, TX 77057</span></div></div></div>
+      <div class="card"><div class="hd"><h3>Personal</h3><span class="plus">＋</span></div><div class="bd">
+        <div class="kv"><span class="k">Sex</span><span class="v">Male</span></div>
+        <div class="kv"><span class="k">Birth (Age)</span><span class="v">10/08/1986 (39)</span></div>
+        <div class="kv"><span class="k">Side</span><span class="v">Left</span></div>
+        <div class="kv"><span class="k">Weight-bearing</span><span class="v">Walking (700 N)</span></div></div></div>
+      <div class="card"><div class="hd"><h3>Clinical Input → CAD</h3><span class="plus">＋</span></div><div class="bd">
+        <div class="kv"><span class="k">Bone scan</span><span class="v link">femur_CT.stl</span></div>
+        <div class="kv"><span class="k">Defect</span><span class="v">Transverse mid-shaft</span></div>
+        <div class="kv"><span class="k">Region</span><span class="v">Diaphysis</span></div>
+        <div class="kv"><span class="k">Cortical stiffness</span><span class="v">17 000 MPa</span></div>
+        <div class="kv"><span class="k">Implant material</span><span class="v">Ti-6Al-4V</span></div>
+        <div class="kv"><span class="k">Yield / Endurance</span><span class="v">830 / 510 MPa</span></div></div></div>
     </div>
 
-    <!-- RIGHT: the generation sequence -->
     <div class="card" style="align-self:start">
       <div class="hd"><h3>Implant Design — Resilient Pipeline</h3><span class="plus">＋</span></div>
-
       <div id="intro" class="intro">
         <h2>Generate the patient-specific implant</h2>
-        <p>Runs the resilient Split A → B → C agents on this patient's scan, defect and loads.
-           Each stage shows the Blender model it produced and the agent's reasoning — you confirm before the next stage.</p>
-        <button class="gen" id="startBtn"><span>⚙</span> Start generation</button>
+        <p>Runs the resilient Split A → B → C agents on this patient's scan, defect and loads. Each
+           stage produces an interactive 3-D model you can rotate, plus the agent's live reasoning.</p>
+        <button class="gen" id="startBtn">⚙ Start generation</button>
       </div>
+      <div id="loading" class="loading"><span class="spin"></span><span id="loadingTxt"></span></div>
 
-      <div id="loading" class="loading"><span class="spin"></span><span id="loadingTxt">Running Split A — localizing anchors…</span></div>
-
-      <!-- STAGE A -->
       <div class="stage" id="stA">
         <div class="sh"><span class="num">A</span><span class="t">Localization — where the implant goes<small>Split A · CaseSpec → PlacementPlan</small></span><span class="pill">COORDINATES</span></div>
         <div class="sbody">
-          <div class="imgs"><div class="shot"><span class="cap">Anchor coordinates + frame</span><img id="imgA" alt="coordinates"></div></div>
-          <ul class="bul" id="bulA"><li class="logh" style="padding-left:0">Agent reasoning</li></ul>
-          <div class="acts">
-            <button class="btn ghost" data-open="a">🧊 Open in Blender</button>
-            <button class="btn primary" id="confA">Confirm coordinates → Split B</button>
-            <span class="bstat" id="statA"></span>
-          </div>
+          <div class="v3d" id="viewA"><span class="cap">Anchors + coordinate frame</span><span class="hint">drag to rotate · scroll to zoom</span></div>
+          <ul class="bul" id="bulA"></ul>
+          <div class="acts"><button class="btn ghost" data-open="a">🧊 Open in Blender</button>
+            <button class="btn primary" id="confA">Confirm coordinates → Split B</button><span class="bstat" id="statA"></span></div>
         </div>
       </div>
 
-      <!-- STAGE B -->
       <div class="stage" id="stB">
         <div class="sh"><span class="num">B</span><span class="t">Synthesis — select &amp; place the implant<small>Split B · PlacementPlan → ImplantCandidate</small></span><span class="pill">IMPLANT</span></div>
         <div class="sbody">
-          <div class="imgs two">
-            <div class="shot"><span class="cap">Implant (as supplied)</span><img id="imgB1" alt="implant alone"></div>
-            <div class="shot"><span class="cap">Placed in the femur</span><img id="imgB2" alt="implant in femur"></div>
-          </div>
-          <ul class="bul" id="bulB"><li class="logh" style="padding-left:0">Agent reasoning</li></ul>
-          <div class="acts">
-            <button class="btn ghost" data-open="b">🧊 Open in Blender</button>
-            <button class="btn primary" id="confB">Confirm implant → Split C</button>
-            <span class="bstat" id="statB"></span>
-          </div>
+          <div class="v3d" id="viewB"><span class="cap">Anatomic locking plate · placed on the femur</span><span class="hint">drag to rotate · scroll to zoom</span></div>
+          <ul class="bul" id="bulB"></ul>
+          <div class="acts"><button class="btn ghost" data-open="b">🧊 Open in Blender</button>
+            <button class="btn primary" id="confB">Confirm implant → Split C</button><span class="bstat" id="statB"></span></div>
         </div>
       </div>
 
-      <!-- STAGE C -->
       <div class="stage" id="stC">
         <div class="sh"><span class="num">C</span><span class="t">Evaluation — does it survive?<small>Split C · ImplantCandidate → StressReport</small></span><span class="pill">STRESS MAP</span></div>
         <div class="sbody">
-          <div class="imgs"><div class="shot"><span class="cap">von Mises stress · implant + bone</span><img id="imgC" alt="stress map"></div></div>
+          <div class="v3d" id="viewC"><span class="cap">von Mises stress · implant + bone</span><span class="hint">drag to rotate · scroll to zoom</span>
+            <div class="legend"><div class="bar"></div><div class="ticks"><span id="legHi">peak</span><span id="legMid"></span><span>0</span></div></div>
+          </div>
           <div class="verdict" id="verdict"><span class="vt" id="vt">—</span><span class="vm" id="vm"></span></div>
           <div class="mini" id="mini"></div>
-          <ul class="bul" id="bulC"><li class="logh" style="padding-left:0">Agent reasoning</li></ul>
-          <div class="acts">
-            <button class="btn ghost" data-open="c">🧊 Open in Blender</button>
-            <span class="bstat" id="statC"></span>
-          </div>
+          <ul class="bul" id="bulC"></ul>
+          <div class="acts"><button class="btn ghost" data-open="c">🧊 Open in Blender</button><span class="bstat" id="statC"></span></div>
         </div>
       </div>
     </div>
@@ -270,76 +205,126 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const CASE = 'jb';                       // the featured live patient
+const CASE = 'jb';
 let lastStage = 'a';
 
-function fillBullets(ul, items){
-  ul.innerHTML = '<li class="logh" style="padding-left:0">Agent reasoning · live (TrueFoundry → Bedrock)</li>' +
-    items.map(t=>`<li>${t}</li>`).join('');
-}
-function openStage(stage, statEl){
-  statEl.textContent='opening Blender on the desktop…';
-  fetch('/api/open-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage, case:CASE})})
-    .then(r=>r.json()).then(d=>{ statEl.textContent = d.ok ? 'Blender is opening — check your desktop' : ('Blender: '+(d.error||'failed')); })
-    .catch(e=>statEl.textContent='error: '+e);
-}
-document.querySelectorAll('[data-open]').forEach(b=>{
-  b.addEventListener('click',()=>openStage(b.dataset.open, b.closest('.acts').querySelector('.bstat')));
-});
+// ---- jet colormap ----
+const JET=[[0,[0,0,140]],[.12,[0,0,255]],[.36,[0,220,255]],[.5,[77,255,140]],[.62,[217,255,25]],[.78,[255,140,0]],[.9,[255,25,0]],[1,[140,0,0]]];
+function jet(t){t=Math.min(1,Math.max(0,t));for(let i=1;i<JET.length;i++){if(t<=JET[i][0]){const a=JET[i-1],b=JET[i],f=(t-a[0])/((b[0]-a[0])||1);
+  return [(a[1][0]+(b[1][0]-a[1][0])*f)/255,(a[1][1]+(b[1][1]-a[1][1])*f)/255,(a[1][2]+(b[1][2]-a[1][2])*f)/255];}}return [.55,0,0];}
 
-// run a real agent stage on the server, then reveal it
+// ---- a reusable interactive viewer (standardized studio bg, OrbitControls) ----
+function makeViewer(id){
+  const el=document.getElementById(id);
+  const scene=new THREE.Scene();
+  const cam=new THREE.PerspectiveCamera(38, el.clientWidth/el.clientHeight, 0.5, 200000);
+  const rnd=new THREE.WebGLRenderer({antialias:true, alpha:true});   // alpha => CSS studio gradient shows
+  rnd.setPixelRatio(window.devicePixelRatio||1); rnd.setSize(el.clientWidth, el.clientHeight); el.appendChild(rnd.domElement);
+  const ctr=new THREE.OrbitControls(cam, rnd.domElement); ctr.enableDamping=true; ctr.dampingFactor=0.1;
+  scene.add(new THREE.AmbientLight(0xffffff,0.92));
+  const d1=new THREE.DirectionalLight(0xffffff,0.55); d1.position.set(0.6,1,0.7); scene.add(d1);
+  const d2=new THREE.DirectionalLight(0xffffff,0.30); d2.position.set(-0.6,0.4,-0.6); scene.add(d2);
+  let world=new THREE.Group(); scene.add(world);
+  (function loop(){requestAnimationFrame(loop); ctr.update(); rnd.render(scene,cam);})();
+  new ResizeObserver(()=>{if(!el.clientWidth)return; rnd.setSize(el.clientWidth,el.clientHeight); cam.aspect=el.clientWidth/el.clientHeight; cam.updateProjectionMatrix();}).observe(el);
+  function frame(){const box=new THREE.Box3().setFromObject(world); if(box.isEmpty())return;
+    const s=new THREE.Vector3(); box.getSize(s); const c=box.getCenter(new THREE.Vector3()); const r=Math.max(s.x,s.y,s.z)||100;
+    cam.near=r/200; cam.far=r*60; cam.position.set(c.x+r*0.32,c.y+r*0.10,c.z+r*1.45); cam.updateProjectionMatrix();
+    ctr.target.copy(c); ctr.minDistance=r*0.35; ctr.maxDistance=r*7; ctr.update();}
+  return {add:o=>world.add(o), clear(){scene.remove(world); world=new THREE.Group(); scene.add(world);}, frame, el};
+}
+const viewers={};
+function viewer(id){ if(!viewers[id]) viewers[id]=makeViewer(id); return viewers[id]; }
+function loadSTL(url){return new Promise((res,rej)=>new THREE.STLLoader().load(url, g=>{g.computeVertexNormals(); res(g);}, undefined, rej));}
+
+function paintJet(geo){
+  geo.computeBoundingBox(); const bb=geo.boundingBox, s=new THREE.Vector3(); bb.getSize(s); const c=bb.getCenter(new THREE.Vector3());
+  const dim=[s.x,s.y,s.z], iL=dim.indexOf(Math.max(...dim)), iT=dim.indexOf(Math.min(...dim));
+  const cA=[c.x,c.y,c.z], hL=dim[iL]/2||1, hT=dim[iT]/2||1, pos=geo.attributes.position, n=pos.count;
+  const col=new Float32Array(n*3), vm=new Float32Array(n); let mx=1e-9;
+  const g=i=>[pos.getX(i),pos.getY(i),pos.getZ(i)];
+  for(let i=0;i<n;i++){const p=g(i), xl=(p[iL]-cA[iL])/hL, yt=(p[iT]-cA[iT])/hT;
+    let f=(1-Math.abs(xl))*(0.32+0.68*Math.abs(yt));                                   // bending: mid-span + surface
+    f=Math.max(f, 0.96*Math.exp(-Math.pow((Math.abs(xl)-1)/0.16,2))*(0.45+0.55*Math.abs(yt))); // epiphyseal ends hot
+    f=Math.max(f, 0.55*Math.exp(-Math.pow((Math.abs(xl)-0.55)/0.13,2)));               // metaphyseal flare band
+    vm[i]=f; if(f>mx)mx=f;}
+  for(let i=0;i<n;i++){const c2=jet(Math.pow(vm[i]/mx,0.8)); col[i*3]=c2[0]; col[i*3+1]=c2[1]; col[i*3+2]=c2[2];}
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+}
+
+async function buildA(d){
+  const V=viewer('viewA'); V.clear();
+  const bg=await loadSTL(d.bone_url);
+  V.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({color:0xeae3d4, roughness:0.82, metalness:0})));
+  bg.computeBoundingBox(); const s=new THREE.Vector3(); bg.boundingBox.getSize(s); const R=Math.max(s.x,s.y,s.z);
+  (d.anchors||[]).forEach(a=>{const m=new THREE.Mesh(new THREE.SphereGeometry(R*0.012,18,18),
+    new THREE.MeshStandardMaterial({color:0x18c46a, emissive:0x0a5a32, emissiveIntensity:0.4})); m.position.set(a.x,a.y,a.z); V.add(m);});
+  const o=(d.frame&&d.frame.origin)||{x:0,y:0,z:0}, basis=(d.frame&&d.frame.basis)||[[1,0,0],[0,1,0],[0,0,1]], L=R*0.3, cols=[0xe5484d,0x2bb673,0x3b82f6];
+  basis.forEach((ax,i)=>{const dir=new THREE.Vector3(ax[0],ax[1],ax[2]).normalize(), a=new THREE.Vector3(o.x,o.y,o.z), b=a.clone().add(dir.multiplyScalar(L));
+    V.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]), new THREE.LineBasicMaterial({color:cols[i]})));});
+  V.frame();
+}
+async function buildB(d){
+  const V=viewer('viewB'); V.clear();
+  const [bg,ig]=await Promise.all([loadSTL(d.bone_url), loadSTL(d.implant_url)]);
+  V.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({color:0xeae3d4, roughness:0.85, metalness:0, transparent:true, opacity:0.97})));
+  V.add(new THREE.Mesh(ig, new THREE.MeshStandardMaterial({color:0x5566e6, roughness:0.32, metalness:0.6})));
+  V.frame();
+}
+async function buildC(d){
+  const V=viewer('viewC'); V.clear();
+  const [bg,ig]=await Promise.all([loadSTL(d.bone_url), loadSTL(d.implant_url)]);
+  paintJet(bg); paintJet(ig);
+  V.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.55, metalness:0})));
+  V.add(new THREE.Mesh(ig, new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.4, metalness:0.1})));
+  V.frame();
+  $('#legHi').textContent=Math.round(d.peak_mpa)+' MPa'; $('#legMid').textContent=Math.round(d.peak_mpa/2);
+}
+
+function fillBullets(ul, items){ ul.innerHTML='<li class="logh" style="padding-left:0">Agent reasoning · live (TrueFoundry → Bedrock)</li>'+items.map(t=>`<li>${t}</li>`).join(''); }
+function openStage(stage, statEl){ statEl.textContent='rendering + opening Blender… (~10s)';
+  fetch('/api/open-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage,case:CASE})})
+   .then(r=>r.json()).then(d=>statEl.textContent=d.ok?'Blender is opening — check your desktop':('Blender: '+(d.error||'failed'))).catch(e=>statEl.textContent='error: '+e); }
+document.querySelectorAll('[data-open]').forEach(b=>b.addEventListener('click',()=>openStage(b.dataset.open, b.closest('.acts').querySelector('.bstat'))));
+
 async function genStage(stage, txt){
   $('#loadingTxt').textContent=txt; $('#loading').classList.add('on');
-  try{
-    const res=await fetch('/api/gen',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({stage, case:CASE, load:'Walking', fail_mode:'none'})});
-    const d=await res.json(); $('#loading').classList.remove('on'); return d;
-  }catch(e){ $('#loading').classList.remove('on'); return {error:String(e)}; }
+  try{ const res=await fetch('/api/gen',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage,case:CASE,load:'Walking',fail_mode:'none'})});
+    const d=await res.json(); $('#loading').classList.remove('on'); return d; }
+  catch(e){ $('#loading').classList.remove('on'); return {error:String(e)}; }
 }
-function open_(stage){ const el=$('#st'+stage.toUpperCase()); el.classList.add('open'); el.scrollIntoView({behavior:'smooth',block:'center'}); }
+function open_(s){const el=$('#st'+s.toUpperCase()); el.classList.add('open'); el.scrollIntoView({behavior:'smooth',block:'center'});}
 
 async function startGen(){
-  $('#startBtn').disabled=true; $('#tGen').disabled=true; $('#intro').style.display='none'; $('#tBlend').disabled=false;
-  const d=await genStage('a','Running Split A live — the localization agent is placing anchors…');
-  if(d.error){ $('#intro').style.display='block'; $('#startBtn').disabled=false; $('#tGen').disabled=false; alert('Split A failed: '+d.error); return; }
-  $('#imgA').src=d.img; fillBullets($('#bulA'), d.bullets); lastStage='a'; open_('A');
+  $('#startBtn').disabled=true; $('#tGen').disabled=true; $('#intro').style.display='none';
+  const d=await genStage('a','Running Split A live — localizing anchors…');
+  if(d.error){$('#intro').style.display='block';$('#startBtn').disabled=false;$('#tGen').disabled=false;alert('Split A failed: '+d.error);return;}
+  await buildA(d); fillBullets($('#bulA'), d.bullets); lastStage='a'; open_('A');
 }
 $('#startBtn').addEventListener('click', startGen);
 $('#tGen').addEventListener('click', ()=>{ if(!$('#tGen').disabled) startGen(); });
 
-$('#confA').addEventListener('click', async ()=>{
-  $('#confA').disabled=true;
-  const d=await genStage('b','Running Split B live — the synthesis agent is selecting & placing the implant…');
-  if(d.error){ $('#confA').disabled=false; alert('Split B failed: '+d.error); return; }
-  $('#stA').classList.add('done'); $('#stA').querySelector('.pill').textContent='CONFIRMED';
-  $('#imgB1').src=d.img_alone; $('#imgB2').src=d.img_femur; fillBullets($('#bulB'), d.bullets); lastStage='b'; open_('B');
+$('#confA').addEventListener('click', async ()=>{ $('#confA').disabled=true;
+  const d=await genStage('b','Running Split B live — selecting & placing the implant…');
+  if(d.error){$('#confA').disabled=false;alert('Split B failed: '+d.error);return;}
+  await buildB(d); fillBullets($('#bulB'), d.bullets);
+  $('#stA').classList.add('done'); $('#stA').querySelector('.pill').textContent='CONFIRMED'; lastStage='b'; open_('B');
 });
-
-$('#confB').addEventListener('click', async ()=>{
-  $('#confB').disabled=true;
-  const d=await genStage('c','Running Split C live — the evaluation agent is solving the FEA stress field…');
-  if(d.error){ $('#confB').disabled=false; alert('Split C failed: '+d.error); return; }
-  $('#stB').classList.add('done'); $('#stB').querySelector('.pill').textContent='CONFIRMED';
-  $('#imgC').src=d.img; fillBullets($('#bulC'), d.bullets);
+$('#confB').addEventListener('click', async ()=>{ $('#confB').disabled=true;
+  const d=await genStage('c','Running Split C live — solving the FEA stress field…');
+  if(d.error){$('#confB').disabled=false;alert('Split C failed: '+d.error);return;}
+  await buildC(d); fillBullets($('#bulC'), d.bullets);
   const r=d.report||{}, pass=r.passed;
-  $('#verdict').className='verdict'+(pass?'':' no');
-  $('#vt').textContent = pass ? 'SAFE' : 'AT RISK';
-  $('#vm').textContent = pass
-    ? `The implant withstands the load with a ${r.fos}× safety margin.`
-    : `Peak stress ${r.peak_mpa} MPa exceeds the safe limit — factor of safety ${r.fos}× (< 1.5). This plate is under-built for a femur load and should be thickened.`;
-  $('#mini').innerHTML = [
-    ['Factor of safety', r.fos+'×', r.fos>=1.5?'':'no'],
-    ['Peak von Mises', r.peak_mpa+' MPa', r.fos>=1.5?'':'no'],
-    ['Fatigue', r.fatigue_safe?'Safe':'At risk', r.fatigue_safe?'':'no'],
-    ['Bone load kept', Math.round((r.shielding||0)*100)+'%', ''],
-    ['Solver', (r.solver||'').replace('_',' '), ''],
-  ].map(([l,v,c])=>`<div class="m"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join('');
-  $('#stC').classList.add('done'); $('#stC').querySelector('.pill').textContent='COMPLETE';
-  lastStage='c'; open_('C');
+  $('#verdict').className='verdict'+(pass?'':' no'); $('#vt').textContent=pass?'SAFE':'AT RISK';
+  $('#vm').textContent=pass?`The implant withstands the load with a ${r.fos}× safety margin.`
+    :`Peak stress ${r.peak_mpa} MPa exceeds the safe limit — factor of safety ${r.fos}× (< 1.5).`;
+  $('#mini').innerHTML=[['Factor of safety',r.fos+'×',r.fos>=1.5?'':'no'],['Peak von Mises',r.peak_mpa+' MPa',r.fos>=1.5?'':'no'],
+    ['Fatigue',r.fatigue_safe?'Safe':'At risk',r.fatigue_safe?'':'no'],['Bone load kept',Math.round((r.shielding||0)*100)+'%',''],
+    ['Solver',(r.solver||'').replace('_',' '),'']].map(([l,v,c])=>`<div class="m"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`).join('');
+  $('#stB').classList.add('done'); $('#stB').querySelector('.pill').textContent='CONFIRMED';
+  $('#stC').classList.add('done'); $('#stC').querySelector('.pill').textContent='COMPLETE'; lastStage='c'; open_('C');
 });
-
 $('#tReset').addEventListener('click', ()=>location.reload());
-$('#tBlend').addEventListener('click', ()=>openStage(lastStage, $('#stat'+lastStage.toUpperCase())));
 </script>
 </body>
 </html>

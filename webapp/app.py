@@ -768,9 +768,43 @@ def _llm_bullets(role: str, stage: str, facts: str, trace) -> list[str] | None:
         return None
 
 
+@app.route("/norm_bone.stl")
+def norm_bone():
+    """The femur normalized into the PlacementPlan frame (so it aligns with the placed implant)."""
+    _ensure_bone_norm()
+    return send_file(BONE_NORM, mimetype="model/stl")
+
+
+@app.route("/stage_mesh/<case_id>.stl")
+def stage_mesh(case_id):
+    p = RENDERS / f"live_posed_{case_id}.stl"
+    if not p.exists():
+        abort(404)
+    return send_file(p, mimetype="model/stl")
+
+
+def _evaluate_anatomic(case, plan, case_key, trace):
+    """Evaluate the registered anatomic plate -> (StressReport, posed_path, extents)."""
+    posed = RENDERS / f"live_posed_{case_key}.stl"
+    if not posed.exists():
+        posed, _a, _e = _register_plate(plan, case_key)
+    src = trimesh.load(ANATOMIC)
+    e = sorted(float(x) for x in src.extents)  # [thickness, width, length]
+    cand = ImplantCandidate(
+        case_id=case.case_id, candidate_id="anatomic-lcp", iteration=0,
+        parameter_vector={"length_mm": round(e[2]), "width_mm": round(e[1]), "thickness_mm": round(e[0])},
+        mesh_path=str(ANATOMIC), contacts_anchor_ids=[], volume_mm3=float(abs(src.volume)),
+        min_thickness_mm=round(e[0], 1),
+        validity={"watertight": True, "manifold": True, "self_intersect": False},
+        fallback_rung=1, trace_id=trace.trace_id)
+    r = engine.run({"candidate": cand, "case": case, "mode": "three_point"}, trace.child("evaluate"))
+    return r, posed, e
+
+
 @app.route("/api/gen", methods=["POST"])
 def gen():
-    """Run the LIVE A->B<->C pipeline (real agents on the gateway) and render one stage."""
+    """Run the LIVE A->B<->C pipeline (real agents on the gateway) and return the meshes + data
+    for one stage. The browser renders them interactively (three.js) — no Blender for display."""
     b = request.get_json(force=True, silent=True) or {}
     case_key = b.get("case") if b.get("case") in CASES else "jb"
     load_key = b.get("load") if b.get("load") in LOADS else "Walking"
@@ -778,39 +812,30 @@ def gen():
     stage = b.get("stage")
 
     res = _pipeline(case_key, load_key, fail)  # live, cached; never raises
-    plan, cand, report, case = res["plan"], res["cand"], res["report"], res["case"]
+    plan, case = res["plan"], res["case"]
     trace = LoopTrace(case.case_id, stage="webgen")
-    v = f"{case_key}-{load_key}-{Path(cand.mesh_path).stem}"
+    bone_url = "/norm_bone.stl"
 
     if stage == "a":
-        pj = RENDERS / f"_plan_{case_key}.json"
-        pj.write_text(plan.model_dump_json())
-        bone = str(ROOT / "fixtures" / "dummy_bone.stl")
-        png = RENDERS / f"live_coords_{case_key}.png"
-        _blender_run("--python", str(SA_RENDER), "--", str(pj), bone, str(png))
-        _blender_run("--python", str(SA_RENDER), "--", str(pj), bone, str(RENDERS / f"live_coords_{case_key}.blend"))
-        th = [round(a.cortical_thickness_mm, 1) for a in plan.anchor_points]
-        facts = (f"bone=femur; anchors={len(plan.anchor_points)} on cortical surface; "
-                 f"cortical thickness {min(th)}-{max(th)} mm (rejected <1.5 mm); PCA frame along shaft; "
+        anchors = [{"x": a.xyz.x, "y": a.xyz.y, "z": a.xyz.z,
+                    "n": [a.normal.x, a.normal.y, a.normal.z],
+                    "t": round(a.cortical_thickness_mm, 1)} for a in plan.anchor_points]
+        th = [a["t"] for a in anchors] or [0]
+        facts = (f"bone=femur; anchors={len(anchors)} on cortical surface; cortical thickness "
+                 f"{min(th)}-{max(th)} mm (rejected <1.5 mm); PCA frame along shaft; "
                  f"method rung={plan.fallback_rung}; confidence={round(plan.confidence,2)}")
         bullets = _llm_bullets("Split A localization", "localize", facts, trace) or [
-            f"Placed {len(plan.anchor_points)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
+            f"Placed {len(anchors)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
             "Built a PCA coordinate frame aligned to the bone's long axis.",
             "Farthest-point-spread the anchors to bracket the fracture.",
             f"Produced by rung {plan.fallback_rung}, confidence {round(plan.confidence,2)}.",
         ]
-        return jsonify({"stage": "a", "img": f"/static/renders/live_coords_{case_key}.png?v={v}",
-                        "bullets": bullets, "rung": plan.fallback_rung})
+        return jsonify({"stage": "a", "bone_url": bone_url, "anchors": anchors,
+                        "frame": plan.coordinate_frame or {}, "bullets": bullets})
 
     if stage == "b":
-        posed, alone_stl, ext = _register_plate(plan, case_key)
-        alone = RENDERS / f"live_implant_alone_{case_key}.png"
-        infem = RENDERS / f"live_implant_in_femur_{case_key}.png"
-        _combo([{"path": str(alone_stl), "kind": "implant"}], alone,
-               RENDERS / f"live_implant_alone_{case_key}.blend")
-        _combo([{"path": str(BONE_NORM), "kind": "bone"}, {"path": str(posed), "kind": "implant"}],
-               infem, RENDERS / f"live_implant_in_femur_{case_key}.blend")
-        e = sorted(float(x) for x in ext)  # [thickness, width, length]
+        posed, _alone, ext = _register_plate(plan, case_key)
+        e = sorted(float(x) for x in ext)
         facts = (f"anatomic locking compression plate {round(e[2])}x{round(e[1])}x{round(e[0])} mm "
                  f"(length x width x thickness); 6 countersunk screw holes + 2 elongated combi-slots; "
                  f"contoured body with beveled edges; selected for a diaphyseal fracture with surface "
@@ -822,42 +847,26 @@ def gen():
             "Registered it onto the shaft, seated on the cortical surface over the fracture.",
             "Real CAD geometry preserved — rotation and translation only.",
         ]
-        return jsonify({"stage": "b", "img_alone": f"/static/renders/live_implant_alone_{case_key}.png?v={v}",
-                        "img_femur": f"/static/renders/live_implant_in_femur_{case_key}.png?v={v}",
-                        "bullets": bullets, "rung": "select + register"})
+        return jsonify({"stage": "b", "bone_url": bone_url,
+                        "implant_url": f"/stage_mesh/{case_key}.stl?v={posed.stat().st_mtime_ns}",
+                        "dims": {"L": round(e[2]), "W": round(e[1]), "T": round(e[0])}, "bullets": bullets})
 
     if stage == "c":
-        posed = RENDERS / f"live_posed_{case_key}.stl"
-        if not posed.exists():
-            posed, _a, _e = _register_plate(plan, case_key)
-        src = trimesh.load(ANATOMIC)
-        e = sorted(float(x) for x in src.extents)
-        cand2 = ImplantCandidate(
-            case_id=case.case_id, candidate_id="anatomic-lcp", iteration=0,
-            parameter_vector={"length_mm": round(e[2]), "width_mm": round(e[1]), "thickness_mm": round(e[0]),
-                              "source_model": "anatomic_lcp"},
-            mesh_path=str(ANATOMIC), contacts_anchor_ids=[], volume_mm3=float(abs(src.volume)),
-            min_thickness_mm=round(e[0], 1),
-            validity={"watertight": True, "manifold": True, "self_intersect": False},
-            fallback_rung=1, trace_id=trace.trace_id)
-        r = engine.run({"candidate": cand2, "case": case, "mode": "three_point"}, trace.child("evaluate"))
-        out_png = RENDERS / f"live_stress_{case_key}.png"
-        try:
-            _jet_heatmap(posed, out_png, RENDERS / f"live_stress_{case_key}.blend",
-                         r.peak_von_mises_MPa, MATERIALS[CASES[case_key]["material"]]["yield_MPa"])
-        except Exception as exc:
-            return jsonify({"error": str(exc)[:200]}), 200
+        r, posed, e = _evaluate_anatomic(case, plan, case_key, trace)
+        yld = MATERIALS[CASES[case_key]["material"]]["yield_MPa"]
         facts = (f"solver={r.solver_used}; peak von Mises={round(r.peak_von_mises_MPa)} MPa; "
-                 f"yield={int(MATERIALS[CASES[case_key]['material']]['yield_MPa'])} MPa; "
-                 f"factor of safety={round(r.factor_of_safety,2)}; fatigue_safe={r.fatigue_safe}; "
-                 f"stress_shielding_index={round(r.stress_shielding_index,2)}; passed={r.passed}")
+                 f"yield={int(yld)} MPa; factor of safety={round(r.factor_of_safety,2)}; "
+                 f"fatigue_safe={r.fatigue_safe}; stress_shielding_index={round(r.stress_shielding_index,2)}; "
+                 f"passed={r.passed}")
         bullets = _llm_bullets("Split C evaluation", "evaluate", facts, trace) or [
             f"Ran {r.solver_used} 3-point-bending FEA under the {load_key} load.",
             f"Peak {round(r.peak_von_mises_MPa)} MPa → factor of safety {round(r.factor_of_safety,2)}×.",
             f"Fatigue {'safe' if r.fatigue_safe else 'at risk'}; shielding {round(r.stress_shielding_index,2)}.",
             f"Verdict: {'PASS' if r.passed else 'AT RISK — redesign'}.",
         ]
-        return jsonify({"stage": "c", "img": f"/static/renders/live_stress_{case_key}.png?v={v}",
+        return jsonify({"stage": "c", "bone_url": bone_url,
+                        "implant_url": f"/stage_mesh/{case_key}.stl?v={posed.stat().st_mtime_ns}",
+                        "peak_mpa": round(r.peak_von_mises_MPa, 1), "yield_mpa": yld,
                         "bullets": bullets,
                         "report": {"peak_mpa": round(r.peak_von_mises_MPa, 1),
                                    "fos": round(r.factor_of_safety, 2), "passed": bool(r.passed),
@@ -867,45 +876,44 @@ def gen():
     return jsonify({"error": "unknown stage"}), 200
 
 
-STAGE_BLENDS = {"a": "coords.blend", "b": "implant_in_femur.blend", "c": "stress.blend"}
-LIVE_STAGE_BLENDS = {"a": "live_coords_{c}.blend", "b": "live_implant_in_femur_{c}.blend",
-                     "c": "live_stress_{c}.blend"}
+def _render_stage_blend(stage, case_key, load_key="Walking"):
+    """Render the .blend for a stage on demand (only when the user clicks Open in Blender)."""
+    res = _pipeline(case_key, load_key, "none")
+    plan, case = res["plan"], res["case"]
+    trace = LoopTrace(case.case_id, stage="openblend")
+    if stage == "a":
+        pj = RENDERS / f"_plan_{case_key}.json"
+        pj.write_text(plan.model_dump_json())
+        out = RENDERS / f"live_coords_{case_key}.blend"
+        _blender_run("--python", str(SA_RENDER), "--", str(pj),
+                     str(ROOT / "fixtures" / "dummy_bone.stl"), str(out))
+        return out
+    posed, _a, _e = _register_plate(plan, case_key)
+    if stage == "b":
+        out = RENDERS / f"live_implant_in_femur_{case_key}.blend"
+        _combo([{"path": str(BONE_NORM), "kind": "bone"}, {"path": str(posed), "kind": "implant"}],
+               RENDERS / "_tmp.png", out)
+        return out
+    r, posed, _e = _evaluate_anatomic(case, plan, case_key, trace)
+    out = RENDERS / f"live_stress_{case_key}.blend"
+    _jet_heatmap(posed, RENDERS / "_tmp.png", out, r.peak_von_mises_MPa,
+                 MATERIALS[CASES[case_key]["material"]]["yield_MPa"])
+    return out
 
 
 @app.route("/api/open-stage", methods=["POST"])
 def open_stage():
-    """Open the per-stage Blender file in local Blender (live render if present, else preset)."""
+    """Render the stage .blend on demand and open it in the local Blender GUI."""
     b = request.get_json(force=True, silent=True) or {}
     case_key = b.get("case") if b.get("case") in CASES else "jb"
     stage = b.get("stage")
-    tmpl = LIVE_STAGE_BLENDS.get(stage)
-    live = RENDERS / tmpl.format(c=case_key) if tmpl else None
-    blend = live if (live and live.exists()) else (RENDERS / STAGE_BLENDS.get(stage, "x"))
-    if not blend or not Path(blend).exists():
-        return jsonify({"ok": False, "error": "render the stage first"}), 200
-    blender = _blender_bin()
-    if not (os.path.exists(blender) or shutil.which(blender)):
-        return jsonify({"ok": False, "error": "Blender not found"}), 200
-    try:
-        subprocess.Popen([blender, str(blend)])
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)[:200]}), 200
-    return jsonify({"ok": True})
-
-
-def _open_stage_legacy():
-    """unused — kept for reference."""
-    b = request.get_json(force=True, silent=True) or {}
-    fn = STAGE_BLENDS.get(b.get("stage"))
-    if not fn:
+    if stage not in ("a", "b", "c"):
         return jsonify({"ok": False, "error": "unknown stage"}), 200
-    blend = ROOT / "webapp" / "static" / "renders" / fn
-    if not blend.exists():
-        return jsonify({"ok": False, "error": "render not found — run make_demo_renders.py"}), 200
     blender = _blender_bin()
     if not (os.path.exists(blender) or shutil.which(blender)):
         return jsonify({"ok": False, "error": "Blender not found"}), 200
     try:
+        blend = _render_stage_blend(stage, case_key)
         subprocess.Popen([blender, str(blend)])
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)[:200]}), 200
