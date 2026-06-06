@@ -20,7 +20,7 @@ world = bpy.data.worlds.new("w")
 bpy.context.scene.world = world
 world.use_nodes = True
 bg = world.node_tree.nodes["Background"]
-bg.inputs["Color"].default_value = (0.62, 0.64, 0.67, 1)
+bg.inputs["Color"].default_value = (0.16, 0.17, 0.19, 1)   # dark bg for contrast (matches Stage C)
 bg.inputs["Strength"].default_value = 1.0
 
 
@@ -47,8 +47,8 @@ def mat(name, color, metal, rough):
 
 
 STYLE = {
-    "bone": ((0.92, 0.89, 0.82, 1), 0.0, 0.8),
-    "implant": ((0.30, 0.45, 0.95, 1), 0.7, 0.30),
+    "bone": ((0.94, 0.91, 0.85, 1), 0.0, 0.7),       # bright ivory so it reads on the dark bg
+    "implant": ((0.38, 0.52, 0.96, 1), 0.55, 0.32),  # steel blue
 }
 
 
@@ -71,21 +71,14 @@ for entry in spec["meshes"]:
     if entry["kind"] == "implant":
         implant_objs += objs
 
-focus = implant_objs or all_objs
-fp = world_pts(focus)
+# When a bone is present, frame the WHOLE scene (bone + plate) from a side angle so the
+# plate is clearly seen seated on the shaft. Implant-only: frame the plate from a 3/4 view.
+has_bone = len(all_objs) > len(implant_objs)
+fp = world_pts(all_objs) if has_bone else world_pts(implant_objs or all_objs)
 center = mathutils.Vector(fp.mean(0))
 size = float(np.linalg.norm(fp.max(0) - fp.min(0))) or 50.0
 
-# face normal of the implant (PCA minor axis), so we look straight at the plate
-c = fp - fp.mean(0)
-_, vecs = np.linalg.eigh(np.cov(c.T))
-normal = mathutils.Vector(vecs[:, 0])
-allp = world_pts(all_objs)
-scene_center = mathutils.Vector(allp.mean(0))
-if normal.dot(center - scene_center) < 0:
-    normal = -normal
-
-for off, energy in [((1, -1, 2), 3.2), ((-1, 0.6, 1), 1.4)]:
+for off, energy in [((1, -1, 2), 5.5), ((-1, 0.6, 1), 3.0), ((0, 0.3, -1), 1.5)]:
     ld = bpy.data.lights.new("L", "SUN")
     ld.energy = energy
     lo = bpy.data.objects.new("L", ld)
@@ -96,9 +89,18 @@ cd = bpy.data.cameras.new("c")
 cd.clip_end = 1e5
 cam = bpy.data.objects.new("c", cd)
 bpy.context.collection.objects.link(cam)
-view = (normal + (center - scene_center).normalized() * 0.25).normalized() if len(all_objs) > len(focus) \
-    else mathutils.Vector((1.0, -0.4, 0.45)).normalized()
-cam.location = center + view * size * 1.7
+if has_bone:
+    view = mathutils.Vector((0.55, -0.8, 0.18)).normalized()   # side, whole bone + plate
+    dist = size * 1.7   # far enough to fit the full femur in frame
+else:
+    # look at the plate's BROAD face (PCA minor axis) so the screw holes are visible
+    ip = world_pts(implant_objs or all_objs)
+    cc = ip - ip.mean(0)
+    _, vecs = np.linalg.eigh(np.cov(cc.T))
+    face_n = mathutils.Vector(vecs[:, 0])
+    view = (face_n * 0.9 + mathutils.Vector((0.18, -0.28, 0.12))).normalized()
+    dist = size * 1.5
+cam.location = center + view * dist
 cam.rotation_euler = (center - cam.location).to_track_quat("-Z", "Y").to_euler()
 bpy.context.scene.camera = cam
 
