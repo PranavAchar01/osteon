@@ -67,21 +67,28 @@ def paint(o, t):
     nt.links.new(emi.outputs["Emission"], out.inputs["Surface"])
     me.materials.clear(); me.materials.append(mat)
 
-def bending_field(P, center, axes, surface_bias=0.7):
-    """Normalized von-Mises-like field: hot at mid-span surface (3-point bending)."""
+def bending_field(P, center, axes, surface_bias=0.7, full=False):
+    """Normalized von-Mises-like field. Implant (full=False): hot at mid-span surface
+    (3-point bending). Bone (full=True): adds epiphyseal end hotspots + metaphyseal flare
+    bands so the WHOLE surface is coloured like a real FEA contour."""
     loc = (P - center) @ axes
     xl = loc[:, 0]; yl = loc[:, 2]
     hx = np.abs(xl).max() or 1.0; hy = np.abs(yl).max() or 1.0
-    span = 1.0 - np.abs(xl) / hx              # max at mid-span
-    fibre = (1 - surface_bias) + surface_bias * np.abs(yl) / hy  # max at the surface
-    f = span * fibre
+    x = xl / hx; y = np.abs(yl) / hy
+    span = (1.0 - np.abs(x)) * ((1 - surface_bias) + surface_bias * y)   # mid-span surface
+    if not full:
+        f = span
+    else:
+        ends = 0.96 * np.exp(-((np.abs(x) - 1.0) / 0.16) ** 2) * (0.45 + 0.55 * y)  # epiphyses
+        flare = 0.55 * np.exp(-((np.abs(x) - 0.55) / 0.13) ** 2)                    # metaphyses
+        f = np.maximum.reduce([span, ends, flare])
     return f / (f.max() or 1.0)
 
 # --- implant (placed) -----------------------------------------------------------------
 impl = imp(spec["implant"])
 Pi = world_verts(impl)
 ci, ai = pca(Pi)
-paint(impl, bending_field(Pi, ci, ai))
+paint(impl, bending_field(Pi, ci, ai, full=False))
 
 # --- bone -----------------------------------------------------------------------------
 scene_pts = [Pi]
@@ -89,7 +96,7 @@ if spec.get("bone"):
     bone = imp(spec["bone"])
     Pb = world_verts(bone)
     cb, ab = pca(Pb)
-    paint(bone, bending_field(Pb, cb, ab, surface_bias=0.55) * 0.78)  # bone load lower band
+    paint(bone, bending_field(Pb, cb, ab, surface_bias=0.55, full=True))  # full-surface contour
     scene_pts.append(Pb)
 
 allp = np.vstack(scene_pts)

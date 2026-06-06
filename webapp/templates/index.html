@@ -6,15 +6,12 @@
 <title>Osteon — Implant Design CRM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
 <style>
   :root{
     --green:#1a9d63; --green-d:#178a57; --bar:#1f3340; --blue:#2f80c8; --blue-d:#2670b3;
     --ink:#16242e; --mut:#7b8a95; --line:#e2e7eb; --bg:#eef1f3; --card:#fff;
     --amber:#e0a106; --red:#c0392b; --teal:#16a085;
-    /* one standardized studio background for every 3-D viewer */
+    /* one standardized studio background behind every rendered model */
     --studio:radial-gradient(130% 130% at 50% 26%, #3a444d 0%, #232b32 52%, #121920 100%);
   }
   *{box-sizing:border-box}
@@ -70,22 +67,16 @@
   .stage .sh{display:flex;align-items:center;gap:11px;padding:13px 16px;background:#f7f9fa;border-bottom:1px solid var(--line)}
   .stage .sh .num{width:25px;height:25px;border-radius:50%;background:var(--bar);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
   .stage.done .sh .num{background:var(--green)}
-  .stage .sh .t{font-size:13.5px;font-weight:700}
-  .stage .sh .t small{display:block;font-size:11px;font-weight:500;color:var(--mut)}
+  .stage .sh .t{font-size:13.5px;font-weight:700} .stage .sh .t small{display:block;font-size:11px;font-weight:500;color:var(--mut)}
   .stage .sh .pill{margin-left:auto;font-size:10.5px;font-weight:700;letter-spacing:.5px;color:var(--mut);border:1px solid var(--line);padding:3px 9px;border-radius:999px;background:#fff}
   .stage.done .sh .pill{color:var(--green);border-color:#bfe6d2;background:#eafaf1}
   .sbody{padding:16px;display:none} .stage.open .sbody{display:block}
 
-  /* standardized 3-D viewer: same studio gradient everywhere, drag to rotate */
-  .v3d{position:relative;width:100%;height:430px;background:var(--studio);border:1px solid var(--line);overflow:hidden;cursor:grab}
-  .v3d:active{cursor:grabbing} .v3d canvas{display:block}
-  .v3d .cap{position:absolute;left:12px;top:11px;font-size:11px;font-weight:600;color:#fff;background:rgba(15,22,28,.6);padding:4px 10px;border-radius:999px;z-index:2}
-  .v3d .hint{position:absolute;right:12px;bottom:11px;font-size:10.5px;color:#cdd6dd;background:rgba(15,22,28,.5);padding:3px 9px;border-radius:999px;z-index:2}
-  .v3d .vload{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#cdd6dd;font-size:12px;z-index:3}
-  .legend{position:absolute;right:14px;top:14px;display:flex;gap:7px;z-index:2;color:#e7edf1;font-size:10px}
-  .legend .bar{width:13px;height:200px;border:1px solid rgba(255,255,255,.4);
-    background:linear-gradient(to top,#00008c,#0000ff,#00dcff,#4dff8c,#d9ff19,#ff8c00,#ff1900,#8c0000)}
-  .legend .ticks{display:flex;flex-direction:column;justify-content:space-between;height:200px}
+  .imgs{display:grid;gap:12px} .imgs.two{grid-template-columns:1fr 1fr}
+  @media (max-width:680px){.imgs.two{grid-template-columns:1fr}}
+  .shot{position:relative;border:1px solid var(--line);background:var(--studio);overflow:hidden;min-height:200px}
+  .shot img{display:block;width:100%}
+  .shot .cap{position:absolute;left:11px;top:10px;font-size:10.5px;font-weight:600;color:#fff;background:rgba(15,22,28,.6);padding:3px 9px;border-radius:999px}
 
   .bul{margin:14px 0 0;padding:0;list-style:none}
   .bul li{position:relative;padding:7px 0 7px 24px;font-size:13px;border-bottom:1px solid #f1f4f6}
@@ -102,12 +93,10 @@
   @keyframes sp{to{transform:rotate(360deg)}}
   .verdict{display:flex;align-items:center;gap:14px;padding:14px 16px;border:1px solid var(--line);margin-top:14px;background:#f7fbf9}
   .verdict.no{background:#fdf4f2;border-color:#f3cfc8}
-  .verdict .vt{font-size:20px;font-weight:800;color:var(--green)} .verdict.no .vt{color:var(--red)}
-  .verdict .vm{font-size:12.5px}
+  .verdict .vt{font-size:20px;font-weight:800;color:var(--green)} .verdict.no .vt{color:var(--red)} .verdict .vm{font-size:12.5px}
   .mini{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
   .mini .m{flex:1;min-width:120px;border:1px solid var(--line);padding:11px 13px;background:#fff}
-  .mini .m .l{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase}
-  .mini .m .v{font-size:20px;font-weight:800;margin-top:4px} .mini .m .v.no{color:var(--red)}
+  .mini .m .l{font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase} .mini .m .v{font-size:20px;font-weight:800;margin-top:4px} .mini .m .v.no{color:var(--red)}
 </style>
 </head>
 <body>
@@ -161,8 +150,8 @@
       <div class="hd"><h3>Implant Design — Resilient Pipeline</h3><span class="plus">＋</span></div>
       <div id="intro" class="intro">
         <h2>Generate the patient-specific implant</h2>
-        <p>Runs the resilient Split A → B → C agents on this patient's scan, defect and loads. Each
-           stage produces an interactive 3-D model you can rotate, plus the agent's live reasoning.</p>
+        <p>Runs the resilient Split A → B → C agents on this patient's scan, defect and loads.
+           Each stage renders the model it produced and the agent's live reasoning — confirm to continue.</p>
         <button class="gen" id="startBtn">⚙ Start generation</button>
       </div>
       <div id="loading" class="loading"><span class="spin"></span><span id="loadingTxt"></span></div>
@@ -170,7 +159,7 @@
       <div class="stage" id="stA">
         <div class="sh"><span class="num">A</span><span class="t">Localization — where the implant goes<small>Split A · CaseSpec → PlacementPlan</small></span><span class="pill">COORDINATES</span></div>
         <div class="sbody">
-          <div class="v3d" id="viewA"><span class="cap">Anchors + coordinate frame</span><span class="hint">drag to rotate · scroll to zoom</span></div>
+          <div class="imgs"><div class="shot"><span class="cap">Anchors + coordinate frame</span><img id="imgA" alt=""></div></div>
           <ul class="bul" id="bulA"></ul>
           <div class="acts"><button class="btn ghost" data-open="a">🧊 Open in Blender</button>
             <button class="btn primary" id="confA">Confirm coordinates → Split B</button><span class="bstat" id="statA"></span></div>
@@ -180,7 +169,10 @@
       <div class="stage" id="stB">
         <div class="sh"><span class="num">B</span><span class="t">Synthesis — select &amp; place the implant<small>Split B · PlacementPlan → ImplantCandidate</small></span><span class="pill">IMPLANT</span></div>
         <div class="sbody">
-          <div class="v3d" id="viewB"><span class="cap">Anatomic locking plate · placed on the femur</span><span class="hint">drag to rotate · scroll to zoom</span></div>
+          <div class="imgs two">
+            <div class="shot"><span class="cap">Anatomic locking plate</span><img id="imgB1" alt=""></div>
+            <div class="shot"><span class="cap">Placed in the femur</span><img id="imgB2" alt=""></div>
+          </div>
           <ul class="bul" id="bulB"></ul>
           <div class="acts"><button class="btn ghost" data-open="b">🧊 Open in Blender</button>
             <button class="btn primary" id="confB">Confirm implant → Split C</button><span class="bstat" id="statB"></span></div>
@@ -190,9 +182,7 @@
       <div class="stage" id="stC">
         <div class="sh"><span class="num">C</span><span class="t">Evaluation — does it survive?<small>Split C · ImplantCandidate → StressReport</small></span><span class="pill">STRESS MAP</span></div>
         <div class="sbody">
-          <div class="v3d" id="viewC"><span class="cap">von Mises stress · implant + bone</span><span class="hint">drag to rotate · scroll to zoom</span>
-            <div class="legend"><div class="bar"></div><div class="ticks"><span id="legHi">peak</span><span id="legMid"></span><span>0</span></div></div>
-          </div>
+          <div class="imgs"><div class="shot"><span class="cap">von Mises stress · implant + bone</span><img id="imgC" alt=""></div></div>
           <div class="verdict" id="verdict"><span class="vt" id="vt">—</span><span class="vm" id="vm"></span></div>
           <div class="mini" id="mini"></div>
           <ul class="bul" id="bulC"></ul>
@@ -207,79 +197,6 @@
 const $ = s => document.querySelector(s);
 const CASE = 'jb';
 let lastStage = 'a';
-
-// ---- jet colormap ----
-const JET=[[0,[0,0,140]],[.12,[0,0,255]],[.36,[0,220,255]],[.5,[77,255,140]],[.62,[217,255,25]],[.78,[255,140,0]],[.9,[255,25,0]],[1,[140,0,0]]];
-function jet(t){t=Math.min(1,Math.max(0,t));for(let i=1;i<JET.length;i++){if(t<=JET[i][0]){const a=JET[i-1],b=JET[i],f=(t-a[0])/((b[0]-a[0])||1);
-  return [(a[1][0]+(b[1][0]-a[1][0])*f)/255,(a[1][1]+(b[1][1]-a[1][1])*f)/255,(a[1][2]+(b[1][2]-a[1][2])*f)/255];}}return [.55,0,0];}
-
-// ---- a reusable interactive viewer (standardized studio bg, OrbitControls) ----
-function makeViewer(id){
-  const el=document.getElementById(id);
-  const scene=new THREE.Scene();
-  const cam=new THREE.PerspectiveCamera(38, el.clientWidth/el.clientHeight, 0.5, 200000);
-  const rnd=new THREE.WebGLRenderer({antialias:true, alpha:true});   // alpha => CSS studio gradient shows
-  rnd.setPixelRatio(window.devicePixelRatio||1); rnd.setSize(el.clientWidth, el.clientHeight); el.appendChild(rnd.domElement);
-  const ctr=new THREE.OrbitControls(cam, rnd.domElement); ctr.enableDamping=true; ctr.dampingFactor=0.1;
-  scene.add(new THREE.AmbientLight(0xffffff,0.92));
-  const d1=new THREE.DirectionalLight(0xffffff,0.55); d1.position.set(0.6,1,0.7); scene.add(d1);
-  const d2=new THREE.DirectionalLight(0xffffff,0.30); d2.position.set(-0.6,0.4,-0.6); scene.add(d2);
-  let world=new THREE.Group(); scene.add(world);
-  (function loop(){requestAnimationFrame(loop); ctr.update(); rnd.render(scene,cam);})();
-  new ResizeObserver(()=>{if(!el.clientWidth)return; rnd.setSize(el.clientWidth,el.clientHeight); cam.aspect=el.clientWidth/el.clientHeight; cam.updateProjectionMatrix();}).observe(el);
-  function frame(){const box=new THREE.Box3().setFromObject(world); if(box.isEmpty())return;
-    const s=new THREE.Vector3(); box.getSize(s); const c=box.getCenter(new THREE.Vector3()); const r=Math.max(s.x,s.y,s.z)||100;
-    cam.near=r/200; cam.far=r*60; cam.position.set(c.x+r*0.32,c.y+r*0.10,c.z+r*1.45); cam.updateProjectionMatrix();
-    ctr.target.copy(c); ctr.minDistance=r*0.35; ctr.maxDistance=r*7; ctr.update();}
-  return {add:o=>world.add(o), clear(){scene.remove(world); world=new THREE.Group(); scene.add(world);}, frame, el};
-}
-const viewers={};
-function viewer(id){ if(!viewers[id]) viewers[id]=makeViewer(id); return viewers[id]; }
-function loadSTL(url){return new Promise((res,rej)=>new THREE.STLLoader().load(url, g=>{g.computeVertexNormals(); res(g);}, undefined, rej));}
-
-function paintJet(geo){
-  geo.computeBoundingBox(); const bb=geo.boundingBox, s=new THREE.Vector3(); bb.getSize(s); const c=bb.getCenter(new THREE.Vector3());
-  const dim=[s.x,s.y,s.z], iL=dim.indexOf(Math.max(...dim)), iT=dim.indexOf(Math.min(...dim));
-  const cA=[c.x,c.y,c.z], hL=dim[iL]/2||1, hT=dim[iT]/2||1, pos=geo.attributes.position, n=pos.count;
-  const col=new Float32Array(n*3), vm=new Float32Array(n); let mx=1e-9;
-  const g=i=>[pos.getX(i),pos.getY(i),pos.getZ(i)];
-  for(let i=0;i<n;i++){const p=g(i), xl=(p[iL]-cA[iL])/hL, yt=(p[iT]-cA[iT])/hT;
-    let f=(1-Math.abs(xl))*(0.32+0.68*Math.abs(yt));                                   // bending: mid-span + surface
-    f=Math.max(f, 0.96*Math.exp(-Math.pow((Math.abs(xl)-1)/0.16,2))*(0.45+0.55*Math.abs(yt))); // epiphyseal ends hot
-    f=Math.max(f, 0.55*Math.exp(-Math.pow((Math.abs(xl)-0.55)/0.13,2)));               // metaphyseal flare band
-    vm[i]=f; if(f>mx)mx=f;}
-  for(let i=0;i<n;i++){const c2=jet(Math.pow(vm[i]/mx,0.8)); col[i*3]=c2[0]; col[i*3+1]=c2[1]; col[i*3+2]=c2[2];}
-  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
-}
-
-async function buildA(d){
-  const V=viewer('viewA'); V.clear();
-  const bg=await loadSTL(d.bone_url);
-  V.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({color:0xeae3d4, roughness:0.82, metalness:0})));
-  bg.computeBoundingBox(); const s=new THREE.Vector3(); bg.boundingBox.getSize(s); const R=Math.max(s.x,s.y,s.z);
-  (d.anchors||[]).forEach(a=>{const m=new THREE.Mesh(new THREE.SphereGeometry(R*0.012,18,18),
-    new THREE.MeshStandardMaterial({color:0x18c46a, emissive:0x0a5a32, emissiveIntensity:0.4})); m.position.set(a.x,a.y,a.z); V.add(m);});
-  const o=(d.frame&&d.frame.origin)||{x:0,y:0,z:0}, basis=(d.frame&&d.frame.basis)||[[1,0,0],[0,1,0],[0,0,1]], L=R*0.3, cols=[0xe5484d,0x2bb673,0x3b82f6];
-  basis.forEach((ax,i)=>{const dir=new THREE.Vector3(ax[0],ax[1],ax[2]).normalize(), a=new THREE.Vector3(o.x,o.y,o.z), b=a.clone().add(dir.multiplyScalar(L));
-    V.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]), new THREE.LineBasicMaterial({color:cols[i]})));});
-  V.frame();
-}
-async function buildB(d){
-  const V=viewer('viewB'); V.clear();
-  const [bg,ig]=await Promise.all([loadSTL(d.bone_url), loadSTL(d.implant_url)]);
-  V.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({color:0xeae3d4, roughness:0.85, metalness:0, transparent:true, opacity:0.97})));
-  V.add(new THREE.Mesh(ig, new THREE.MeshStandardMaterial({color:0x5566e6, roughness:0.32, metalness:0.6})));
-  V.frame();
-}
-async function buildC(d){
-  const V=viewer('viewC'); V.clear();
-  const [bg,ig]=await Promise.all([loadSTL(d.bone_url), loadSTL(d.implant_url)]);
-  paintJet(bg); paintJet(ig);
-  V.add(new THREE.Mesh(bg, new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.55, metalness:0})));
-  V.add(new THREE.Mesh(ig, new THREE.MeshStandardMaterial({vertexColors:true, roughness:0.4, metalness:0.1})));
-  V.frame();
-  $('#legHi').textContent=Math.round(d.peak_mpa)+' MPa'; $('#legMid').textContent=Math.round(d.peak_mpa/2);
-}
 
 function fillBullets(ul, items){ ul.innerHTML='<li class="logh" style="padding-left:0">Agent reasoning · live (TrueFoundry → Bedrock)</li>'+items.map(t=>`<li>${t}</li>`).join(''); }
 function openStage(stage, statEl){ statEl.textContent='rendering + opening Blender… (~10s)';
@@ -297,23 +214,23 @@ function open_(s){const el=$('#st'+s.toUpperCase()); el.classList.add('open'); e
 
 async function startGen(){
   $('#startBtn').disabled=true; $('#tGen').disabled=true; $('#intro').style.display='none';
-  const d=await genStage('a','Running Split A live — localizing anchors…');
+  const d=await genStage('a','Running Split A live — localizing anchors… (~10s)');
   if(d.error){$('#intro').style.display='block';$('#startBtn').disabled=false;$('#tGen').disabled=false;alert('Split A failed: '+d.error);return;}
-  await buildA(d); fillBullets($('#bulA'), d.bullets); lastStage='a'; open_('A');
+  $('#imgA').src=d.img; fillBullets($('#bulA'), d.bullets); lastStage='a'; open_('A');
 }
 $('#startBtn').addEventListener('click', startGen);
 $('#tGen').addEventListener('click', ()=>{ if(!$('#tGen').disabled) startGen(); });
 
 $('#confA').addEventListener('click', async ()=>{ $('#confA').disabled=true;
-  const d=await genStage('b','Running Split B live — selecting & placing the implant…');
+  const d=await genStage('b','Running Split B live — selecting & placing the implant… (~10s)');
   if(d.error){$('#confA').disabled=false;alert('Split B failed: '+d.error);return;}
-  await buildB(d); fillBullets($('#bulB'), d.bullets);
+  $('#imgB1').src=d.img_alone; $('#imgB2').src=d.img_femur; fillBullets($('#bulB'), d.bullets);
   $('#stA').classList.add('done'); $('#stA').querySelector('.pill').textContent='CONFIRMED'; lastStage='b'; open_('B');
 });
 $('#confB').addEventListener('click', async ()=>{ $('#confB').disabled=true;
-  const d=await genStage('c','Running Split C live — solving the FEA stress field…');
+  const d=await genStage('c','Running Split C live — solving the FEA stress field… (~10s)');
   if(d.error){$('#confB').disabled=false;alert('Split C failed: '+d.error);return;}
-  await buildC(d); fillBullets($('#bulC'), d.bullets);
+  $('#imgC').src=d.img; fillBullets($('#bulC'), d.bullets);
   const r=d.report||{}, pass=r.passed;
   $('#verdict').className='verdict'+(pass?'':' no'); $('#vt').textContent=pass?'SAFE':'AT RISK';
   $('#vm').textContent=pass?`The implant withstands the load with a ${r.fos}× safety margin.`

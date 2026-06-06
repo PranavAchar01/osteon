@@ -814,27 +814,35 @@ def gen():
     res = _pipeline(case_key, load_key, fail)  # live, cached; never raises
     plan, case = res["plan"], res["case"]
     trace = LoopTrace(case.case_id, stage="webgen")
-    bone_url = "/norm_bone.stl"
+    mt = lambda p: f"/static/renders/{p.name}?v={p.stat().st_mtime_ns}"  # cache-busted url
 
     if stage == "a":
-        anchors = [{"x": a.xyz.x, "y": a.xyz.y, "z": a.xyz.z,
-                    "n": [a.normal.x, a.normal.y, a.normal.z],
-                    "t": round(a.cortical_thickness_mm, 1)} for a in plan.anchor_points]
-        th = [a["t"] for a in anchors] or [0]
-        facts = (f"bone=femur; anchors={len(anchors)} on cortical surface; cortical thickness "
-                 f"{min(th)}-{max(th)} mm (rejected <1.5 mm); PCA frame along shaft; "
+        pj = RENDERS / f"_plan_{case_key}.json"
+        pj.write_text(plan.model_dump_json())
+        bone = str(ROOT / "fixtures" / "dummy_bone.stl")
+        png = RENDERS / f"live_coords_{case_key}.png"
+        _blender_run("--python", str(SA_RENDER), "--", str(pj), bone, str(png))
+        _blender_run("--python", str(SA_RENDER), "--", str(pj), bone, str(RENDERS / f"live_coords_{case_key}.blend"))
+        th = [round(a.cortical_thickness_mm, 1) for a in plan.anchor_points] or [0]
+        facts = (f"bone=femur; anchors={len(plan.anchor_points)} on cortical surface; cortical "
+                 f"thickness {min(th)}-{max(th)} mm (rejected <1.5 mm); PCA frame along shaft; "
                  f"method rung={plan.fallback_rung}; confidence={round(plan.confidence,2)}")
         bullets = _llm_bullets("Split A localization", "localize", facts, trace) or [
-            f"Placed {len(anchors)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
+            f"Placed {len(plan.anchor_points)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
             "Built a PCA coordinate frame aligned to the bone's long axis.",
             "Farthest-point-spread the anchors to bracket the fracture.",
             f"Produced by rung {plan.fallback_rung}, confidence {round(plan.confidence,2)}.",
         ]
-        return jsonify({"stage": "a", "bone_url": bone_url, "anchors": anchors,
-                        "frame": plan.coordinate_frame or {}, "bullets": bullets})
+        return jsonify({"stage": "a", "img": mt(png), "bullets": bullets})
 
     if stage == "b":
-        posed, _alone, ext = _register_plate(plan, case_key)
+        posed, alone_stl, ext = _register_plate(plan, case_key)
+        alone = RENDERS / f"live_implant_alone_{case_key}.png"
+        infem = RENDERS / f"live_implant_in_femur_{case_key}.png"
+        _combo([{"path": str(alone_stl), "kind": "implant"}], alone,
+               RENDERS / f"live_implant_alone_{case_key}.blend")
+        _combo([{"path": str(BONE_NORM), "kind": "bone"}, {"path": str(posed), "kind": "implant"}],
+               infem, RENDERS / f"live_implant_in_femur_{case_key}.blend")
         e = sorted(float(x) for x in ext)
         facts = (f"anatomic locking compression plate {round(e[2])}x{round(e[1])}x{round(e[0])} mm "
                  f"(length x width x thickness); 6 countersunk screw holes + 2 elongated combi-slots; "
@@ -847,13 +855,16 @@ def gen():
             "Registered it onto the shaft, seated on the cortical surface over the fracture.",
             "Real CAD geometry preserved — rotation and translation only.",
         ]
-        return jsonify({"stage": "b", "bone_url": bone_url,
-                        "implant_url": f"/stage_mesh/{case_key}.stl?v={posed.stat().st_mtime_ns}",
-                        "dims": {"L": round(e[2]), "W": round(e[1]), "T": round(e[0])}, "bullets": bullets})
+        return jsonify({"stage": "b", "img_alone": mt(alone), "img_femur": mt(infem), "bullets": bullets})
 
     if stage == "c":
         r, posed, e = _evaluate_anatomic(case, plan, case_key, trace)
         yld = MATERIALS[CASES[case_key]["material"]]["yield_MPa"]
+        out_png = RENDERS / f"live_stress_{case_key}.png"
+        try:
+            _jet_heatmap(posed, out_png, RENDERS / f"live_stress_{case_key}.blend", r.peak_von_mises_MPa, yld)
+        except Exception as exc:
+            return jsonify({"error": str(exc)[:200]}), 200
         facts = (f"solver={r.solver_used}; peak von Mises={round(r.peak_von_mises_MPa)} MPa; "
                  f"yield={int(yld)} MPa; factor of safety={round(r.factor_of_safety,2)}; "
                  f"fatigue_safe={r.fatigue_safe}; stress_shielding_index={round(r.stress_shielding_index,2)}; "
@@ -864,10 +875,7 @@ def gen():
             f"Fatigue {'safe' if r.fatigue_safe else 'at risk'}; shielding {round(r.stress_shielding_index,2)}.",
             f"Verdict: {'PASS' if r.passed else 'AT RISK — redesign'}.",
         ]
-        return jsonify({"stage": "c", "bone_url": bone_url,
-                        "implant_url": f"/stage_mesh/{case_key}.stl?v={posed.stat().st_mtime_ns}",
-                        "peak_mpa": round(r.peak_von_mises_MPa, 1), "yield_mpa": yld,
-                        "bullets": bullets,
+        return jsonify({"stage": "c", "img": mt(out_png), "bullets": bullets,
                         "report": {"peak_mpa": round(r.peak_von_mises_MPa, 1),
                                    "fos": round(r.factor_of_safety, 2), "passed": bool(r.passed),
                                    "solver": r.solver_used, "shielding": round(r.stress_shielding_index, 2),
@@ -901,9 +909,14 @@ def _render_stage_blend(stage, case_key, load_key="Walking"):
     return out
 
 
+_STAGE_BLEND = {"a": "live_coords_{c}.blend", "b": "live_implant_in_femur_{c}.blend",
+                "c": "live_stress_{c}.blend"}
+
+
 @app.route("/api/open-stage", methods=["POST"])
 def open_stage():
-    """Render the stage .blend on demand and open it in the local Blender GUI."""
+    """Open the stage's .blend in the local Blender GUI (rendered during /api/gen; rendered
+    on demand if it isn't there yet)."""
     b = request.get_json(force=True, silent=True) or {}
     case_key = b.get("case") if b.get("case") in CASES else "jb"
     stage = b.get("stage")
@@ -911,9 +924,11 @@ def open_stage():
         return jsonify({"ok": False, "error": "unknown stage"}), 200
     blender = _blender_bin()
     if not (os.path.exists(blender) or shutil.which(blender)):
-        return jsonify({"ok": False, "error": "Blender not found"}), 200
+        return jsonify({"ok": False, "error": "Blender not found on this server"}), 200
     try:
-        blend = _render_stage_blend(stage, case_key)
+        blend = RENDERS / _STAGE_BLEND[stage].format(c=case_key)
+        if not blend.exists():
+            blend = _render_stage_blend(stage, case_key)
         subprocess.Popen([blender, str(blend)])
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)[:200]}), 200
