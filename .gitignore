@@ -17,4 +17,5 @@ webapp/static/renders/_spec.json
 webapp/static/renders/live_*
 webapp/static/renders/_plan_*.json
 webapp/static/renders/_live_spec.json
+webapp/static/renders/_jet_spec.json
 webapp/PUBLIC_URL.txt
