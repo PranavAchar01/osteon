@@ -1,14 +1,22 @@
 # Osteon
 
-**An AI agent inside Blender that autonomously designs orthopedic implants by iterating geometry against biomechanical stress constraints — built so the design loop never breaks when models, providers, or tools fail.**
+**A resilient AI agent that designs patient-specific orthopedic implants — localizing the bone, synthesizing the implant geometry in Blender, and evaluating it under biomechanical load, in a closed loop that never breaks when a model, provider, or tool fails.**
 
-Built for the **Resilient Agents** online hackathon (TrueFoundry + AWS Bedrock, June 1–7 2026).
+[![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](./LICENSE)
+![Python](https://img.shields.io/badge/python-3.11-black.svg)
+![Stack](https://img.shields.io/badge/TrueFoundry-AI%20Gateway%20%E2%86%92%20AWS%20Bedrock-black.svg)
+
+Built for the **Resilient Agents** hackathon (TrueFoundry + AWS Bedrock).
+
+<p align="center">
+  <img src="webapp/static/renders/stress.png" alt="von Mises stress field on the placed implant and bone" width="100%">
+</p>
 
 ---
 
-## 1. What it does
+## What it does
 
-Given a clinical case (a bone mesh, a defect, and a load profile), Osteon runs a closed agentic loop:
+Given a clinical case — a bone mesh, a defect, and a load profile — Osteon runs a closed agentic loop:
 
 ```
 CaseSpec ─▶ [A] Localize ─▶ PlacementPlan ─▶ [B] Synthesize ─┬▶ ImplantCandidate ─▶ [C] Evaluate ─▶ StressReport
@@ -16,121 +24,122 @@ CaseSpec ─▶ [A] Localize ─▶ PlacementPlan ─▶ [B] Synthesize ─┬�
                                                              └──────────── iterate on θ ◀───────────────┘
 ```
 
-- **[A] Localization** — finds the exact coordinates, anchor points, and resection planes inside the bone.
-- **[B] Synthesis + Controller** — generates a parametric implant mesh in Blender and drives the iteration loop.
-- **[C] Biomechanical Evaluation** — runs stress analysis (FEA) and decides whether the candidate survives.
-
-The point of the project is **resilience**: every stage degrades gracefully when an LLM, provider, or tool fails, and the loop always returns a schema-valid result.
-
----
-
-## 2. Why it is resilient (the hackathon thesis)
-
-Every model call goes through the **TrueFoundry AI Gateway** to **AWS Bedrock**; every tool call goes through the **MCP Gateway**; risky steps are wrapped in **Guardrails**; everything emits one OpenTelemetry trace.
-
-| Failure injected | Handled by | Mechanism |
+| Stage | Role | Input → Output |
 |---|---|---|
-| Rate limit | AI Gateway | Rate-limit rules + unhealthy-model cooldown, traffic shifts to fallback model |
-| Provider/model outage | AI Gateway | Fallback config (401/403/5xx → fallback Bedrock model) |
-| Slow response | AI Gateway + app | Per-target timeout → latency routing; app deadline → next fallback rung |
-| Tool failure / timeout | MCP Gateway + app | Circuit breaker + result-size bounds + local rung-3 floor |
-| Bad intermediate output | Guardrails | `mcp_tool_post_invoke` / `llm_output` hooks reject or repair before the next stage |
-| Cascading errors | Fallback ladder | Each stage's rung-3 floor returns a valid low-confidence output and **never raises** |
+| **A · Localization** | Finds anchor coordinates and a PCA frame on the cortical bone | `CaseSpec` → `PlacementPlan` |
+| **B · Synthesis** | Generates and places a parametric locking plate; drives the iteration | `PlacementPlan` → `ImplantCandidate` |
+| **C · Evaluation** | Runs 3-point-bending FEA — factor of safety, fatigue, stress shielding | `ImplantCandidate` → `StressReport` |
+
+<p align="center">
+  <img src="webapp/static/renders/coords.png" alt="Stage A — anchors + coordinate frame" width="32%">
+  <img src="webapp/static/renders/implant_in_femur.png" alt="Stage B — implant placed in the femur" width="32%">
+  <img src="webapp/static/renders/stress.png" alt="Stage C — von Mises stress map" width="32%">
+</p>
 
 ---
 
-## 3. Stack
+## The point: resilience
 
-- **AWS Bedrock** — foundation models (Claude, Llama 3, Mistral) behind one managed API.
-- **TrueFoundry AI Gateway** — OpenAI-compatible endpoint; routing, fallback, retries, rate limits, observability.
-- **TrueFoundry MCP Gateway** — scoped, audited, authenticated access to the project's tools.
-- **Guardrails** — validate tool arguments before execution, mask/inspect results before the model sees them.
-- **Blender (bpy)** — parametric geometry generation and rendering.
-- **CalculiX / surrogate FEA** — biomechanical stress, factor of safety, fatigue, stress shielding.
-- **Python 3.11**, `uv`, `pydantic`, `trimesh` / `pymeshlab` / `open3d`, `cma`, OpenTelemetry.
+Every model call goes through the **TrueFoundry AI Gateway** to **AWS Bedrock**; every stage is wrapped in a standardized **3-rung fallback ladder** whose floor *never raises*; everything emits one trace. The loop is built to keep producing a schema-valid implant even as infrastructure fails underneath it.
 
----
+The dashboard makes three of those failures reproducible on demand, and surfaces each recovery as evidence — both in the `/api/gen` response and in a banner on the stage:
 
-## 4. Repository layout
+| Inject (button) | What breaks | How it recovers | Evidence returned |
+|---|---|---|---|
+| ⚡ **Revoke Bedrock** | Primary model (`claude-sonnet`) errors | AI Gateway reroutes to `llama-70b` | `recovery: { failover: true, model_used: "bedrock/llama-70b" }` |
+| ⏱ **FEA timeout** | Full 3-D FEA solver unavailable | Falls to 1-D beam model, then closed-form bound | `recovery: { rung: 2, solver: "reduced_surrogate" }` |
+| 🛡 **Bad θ thickness** | LLM proposes a 99 mm plate | Pre-invoke guardrail rejects it *before* meshing; CMA-ES substitutes a valid implant | `recovery: { guardrail_blocked: true, substituted_rung: "cma-es", blender_invoked: false }` |
 
-```
-osteon/
-├── common/                  # JOINTLY OWNED — frozen after Phase 0 (see STANDARDIZATION.md)
-│   ├── settings.py          # env loader
-│   ├── llm.py               # the ONE gateway client wrapper
-│   ├── contracts.py         # CaseSpec, PlacementPlan, ImplantCandidate, StressReport, LoopTrace
-│   ├── errors.py            # shared error taxonomy
-│   ├── ladder.py            # standardized 3-rung fallback ladder
-│   └── trace.py             # OTel span + JSONL emitter
-├── gateway/                 # config-as-code, applied with `tfy apply`
-│   ├── routing.yaml
-│   ├── guardrails.yaml
-│   └── mcp-registry.yaml
-├── split_a_localization/    # Person A
-│   ├── engine.py  mcp_server.py  fixtures/  test_acceptance.py  SETUP.md
-├── split_b_synthesis/       # Person B
-│   ├── engine.py  mcp_server.py  fixtures/  test_acceptance.py  SETUP.md
-├── split_c_evaluation/      # Person C
-│   ├── engine.py  mcp_server.py  fixtures/  test_acceptance.py  SETUP.md
-├── orchestrator.py          # chains the three stages (integration day)
-├── README.md
-└── STANDARDIZATION.md       # the compatibility contract — read this first
-```
+Each injection is a **simulated, reversible** `OSTEON_FORCE_FAIL` toggle held only while the engines run — no credentials, meshes, or files are touched, and every run still ends with a valid implant and report.
 
 ---
 
-## 5. Quickstart (Phase 0 — everyone, once)
+## Quickstart
+
+**Prerequisites:** Python 3.11, [Blender](https://www.blender.org/download/) (for live rendering), and a TrueFoundry AI Gateway token with AWS Bedrock access.
 
 ```bash
 git clone https://github.com/PranavAchar01/osteon.git && cd osteon
-uv venv && source .venv/bin/activate
-uv pip install -e .
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt          # full scientific stack
+pip install -e .                          # register the `osteon` package
 
-cp .env.example .env        # fill TFY_TOKEN, TFY_GATEWAY_URL=https://gateway.truefoundry.ai
-tfy login                   # TrueFoundry CLI
-
-# apply shared gateway config (routing + guardrails + MCP registry)
-tfy apply -f gateway/routing.yaml
-tfy apply -f gateway/guardrails.yaml
-tfy apply -f gateway/mcp-registry.yaml
-
-# smoke test the gateway connection
-python -c "from common.llm import call_llm; print(call_llm(stage='smoke', messages=[{'role':'user','content':'ping'}]).choices[0].message.content)"
+cp .env.example .env                      # set TFY_TOKEN + TFY_GATEWAY_URL
+export OSTEON_BLENDER=/path/to/blender    # e.g. /Applications/Blender.app/Contents/MacOS/Blender
 ```
 
-**Prerequisites:** a TrueFoundry account with an AWS Bedrock provider account added, a Virtual Account Token, and Bedrock model access requested for Claude / Llama 3 70B / Mistral Large (aliased in the gateway as `bedrock/claude-sonnet`, `bedrock/llama-70b`, `bedrock/mistral-large`).
+**Run the dashboard:**
+
+```bash
+python webapp/app.py        # → http://127.0.0.1:5001
+```
+
+Click **⚙ Start generation** to run Split A → B → C live, then use the **RESILIENCE** toolbar (⚡ / ⏱ / 🛡) to inject each failure and watch it recover.
+
+**Run a single case headless:**
+
+```bash
+python orchestrator.py fixtures/example_case.json
+# → { passed, factor_of_safety, solver_used, iterations, trace_id }
+```
 
 ---
 
-## 6. The three splits
+## Deployment
 
-| Split | Owner | Input → Output | Standalone demo |
-|---|---|---|---|
-| **A — Localization** | _A_ | `CaseSpec` → `PlacementPlan` | 5 labeled bones: landmark RMS < 3 mm, anchors in cortical bone, resection angle err < 5°; then kill ML + Bedrock key → rung2 + gateway fallback still produce a valid plan |
-| **B — Synthesis + Controller** | _B_ | `PlacementPlan` + `StressReport` → `ImplantCandidate` | Frozen plan + mock stress oracle: converges with 100% valid meshes; out-of-bounds θ blocked pre-Blender; LLM killed → CMA-ES still converges |
-| **C — Evaluation** | _C_ | `ImplantCandidate` → `StressReport` | Analytic benchmarks within 10%; force solver timeout → surrogate → analytic floor; injected NaN report caught by guardrail |
+The repo ships a containerized deploy path that bakes Blender into the image so live rendering works in the cloud:
 
-Each split is independently runnable against **frozen fixtures + mocks** — nobody is blocked on anyone else. See each split's `SETUP.md`.
+- **[`Dockerfile`](./Dockerfile)** — `python:3.11` + Blender 5.1.2 (headless) + CPU-only torch + the FEA toolchain; serves the dashboard via gunicorn. Builds to a ~2.2 GB `linux/amd64` image.
+- **[`deploy.py`](./deploy.py)** — a TrueFoundry `Service` spec; all account-bound values (workspace, host, token) are read from env, nothing hardcoded.
+- **[`scripts/keepalive.py`](./scripts/keepalive.py)** — a self-healing supervisor that keeps the dashboard + a pinned public tunnel alive, restarting whichever dies.
 
----
-
-## 7. Demo script (for judging)
-
-Run one full case live, then inject three failures mid-loop:
-1. Revoke the Bedrock key → AI Gateway fails Claude → Llama.
-2. Force a CalculiX timeout → C falls full-FEA → surrogate → analytic floor.
-3. Feed an out-of-bounds θ → guardrail blocks it before Blender runs.
-
-Show the single OpenTelemetry trace where all three recoveries appear and the final valid implant is still produced. That one trace evidences AI Gateway, MCP Gateway, Guardrails, and Resilience simultaneously.
+```bash
+docker build -t osteon-dashboard .
+# or deploy to TrueFoundry (requires a workspace + deploy token):
+export TFY_WORKSPACE_FQN='<cluster>:<workspace>' OSTEON_HOST='osteon.<domain>'
+export $(grep -E 'TFY_TOKEN|TFY_GATEWAY_URL' .env | xargs)
+python deploy.py
+```
 
 ---
 
-## 8. Scope note
+## Architecture
 
-This is a hackathon MVP, **not** a clinical/FDA-validated tool. It uses open/synthetic bone data and simplified FEA. The critical path for the competition is the resilience and recovery story, not implant fidelity — if time runs short, A can ship on geometric heuristics only and C on the surrogate+analytic rungs, and the gateway/MCP/guardrail/recovery demo stays fully intact.
+```
+osteon/
+├── common/                  # shared contract layer (frozen interface)
+│   ├── llm.py               # the one AI Gateway client + model-level fallback (F1 lives here)
+│   ├── contracts.py         # CaseSpec, PlacementPlan, ImplantCandidate, StressReport
+│   ├── ladder.py            # the standardized 3-rung fallback ladder (never raises)
+│   ├── errors.py            # shared error taxonomy
+│   └── trace.py             # span + JSONL trace emitter
+├── split_a_localization/    # Stage A — anchors + coordinate frame
+├── split_b_synthesis/       # Stage B — parametric plate + CMA-ES controller (F3 guardrail)
+├── split_c_evaluation/      # Stage C — sfepy FEA → beam → analytic floor (F2 ladder)
+├── webapp/                  # Flask dashboard + Blender render scripts + /api/gen
+├── orchestrator.py          # chains A → B ↔ C end to end
+├── Dockerfile · deploy.py   # containerized TrueFoundry deploy
+└── STANDARDIZATION.md       # the compatibility contract between the stages
+```
+
+Each stage is independently runnable against frozen fixtures and mocks — see each split's `SETUP.md`.
 
 ---
 
-## 9. Contributing
+## Testing
 
-Read **[STANDARDIZATION.md](./STANDARDIZATION.md) before writing any code.** It defines the contracts, the gateway client, the fallback ladder, the trace format, config-as-code conventions, the MCP tool pattern, the git workflow, and the Definition of Done. Conformance to it is what makes the three independently built parts snap together on integration day.
+```bash
+pytest -q        # 34 tests: offline split A/B/C acceptance suites + smoke
+```
+
+The suites verify the happy path *and* the fallback rungs (forced solver timeout → surrogate → floor, out-of-bounds θ rejection, injected-NaN guardrail), all offline with no gateway dependency.
+
+---
+
+## Scope & disclaimer
+
+This is a hackathon MVP, **not** a clinical or FDA-validated tool. It uses open/synthetic bone data and simplified FEA. The focus is the resilience and recovery story — graceful degradation across models, providers, and tools — not implant fidelity.
+
+## License
+
+[MIT](./LICENSE) © 2026 Pranav Achar
