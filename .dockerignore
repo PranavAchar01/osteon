@@ -1,0 +1,10 @@
+.venv
+.git
+__pycache__
+**/__pycache__
+*.pyc
+traces
+.claude
+/tmp
+webapp/static/renders/_tmp.png
+webapp/static/renders/_check_hm.png

@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Keep the Osteon dashboard + public tunnel alive.
+"""Keep the Osteon dashboard + permanent public tunnel alive.
 
 Supervises two processes and restarts whichever dies:
   1. the Flask app on 127.0.0.1:5001
-  2. a cloudflared quick tunnel exposing it publicly
+  2. an ngrok tunnel pinned to a reserved STATIC domain (so the public URL never rotates)
 
-The current public URL is written to webapp/PUBLIC_URL.txt (and printed) so it is always
-discoverable even if cloudflared reconnects with a new hostname. Run detached:
+The static domain comes from the OSTEON_NGROK_DOMAIN env var (e.g. "osteon.ngrok-free.app").
+The ngrok authtoken is read from ngrok's own config (~/Library/Application Support/ngrok),
+so no secret lives in this repo. The current public URL is written to webapp/PUBLIC_URL.txt.
 
-    nohup .venv/bin/python scripts/keepalive.py > /tmp/osteon_keepalive.log 2>&1 &
+Run detached:
+
+    OSTEON_NGROK_DOMAIN=<your-domain> \
+      nohup .venv/bin/python scripts/keepalive.py > /tmp/osteon_keepalive.log 2>&1 &
 """
 import os
-import re
 import subprocess
 import time
 import urllib.request
@@ -19,8 +22,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PY = str(ROOT / ".venv" / "bin" / "python")
-CLOUDFLARED = "/opt/homebrew/bin/cloudflared"
+NGROK = "/opt/homebrew/bin/ngrok"
 PORT = 5001
+DOMAIN = os.environ.get("OSTEON_NGROK_DOMAIN", "").strip()
+PUBLIC_URL = f"https://{DOMAIN}" if DOMAIN else None
 URL_FILE = ROOT / "webapp" / "PUBLIC_URL.txt"
 TUN_LOG = Path("/tmp/osteon_tunnel.log")
 APP_LOG = Path("/tmp/osteon_web.log")
@@ -38,14 +43,6 @@ def app_up():
         return False
 
 
-def tunnel_url():
-    try:
-        m = re.findall(r"https://[a-z0-9-]+\.trycloudflare\.com", TUN_LOG.read_text())
-        return m[-1] if m else None
-    except Exception:
-        return None
-
-
 def start_app():
     global app_proc
     print("[keepalive] starting Flask app", flush=True)
@@ -59,25 +56,29 @@ def start_app():
 
 def start_tunnel():
     global tun_proc
-    print("[keepalive] starting cloudflared tunnel", flush=True)
+    print(f"[keepalive] starting ngrok tunnel -> {PUBLIC_URL}", flush=True)
     TUN_LOG.write_text("")
-    tun_proc = subprocess.Popen([CLOUDFLARED, "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
-                                stdout=open(TUN_LOG, "w"), stderr=subprocess.STDOUT)
+    tun_proc = subprocess.Popen(
+        [NGROK, "http", str(PORT), f"--url={PUBLIC_URL}", "--log=stdout"],
+        stdout=open(TUN_LOG, "w"), stderr=subprocess.STDOUT,
+    )
+    # Pinned domain is deterministic; just confirm the agent accepted it.
     for _ in range(40):
-        u = tunnel_url()
-        if u:
-            URL_FILE.write_text(u + "\n")
-            print(f"[keepalive] PUBLIC URL: {u}", flush=True)
-            return u
+        if public_ok(PUBLIC_URL):
+            URL_FILE.write_text(PUBLIC_URL + "\n")
+            print(f"[keepalive] PUBLIC URL: {PUBLIC_URL}", flush=True)
+            return PUBLIC_URL
         time.sleep(1)
-    return None
+    print("[keepalive] WARNING: tunnel did not come up in time", flush=True)
+    return PUBLIC_URL
 
 
 def public_ok(url):
     if not url:
         return False
     try:
-        req = urllib.request.Request(url + "/", method="GET")
+        req = urllib.request.Request(url + "/", method="GET",
+                                     headers={"ngrok-skip-browser-warning": "1"})
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.status == 200
     except Exception:
@@ -85,9 +86,12 @@ def public_ok(url):
 
 
 def main():
+    if not DOMAIN:
+        raise SystemExit("OSTEON_NGROK_DOMAIN is required (your reserved ngrok static domain).")
     start_app()
     url = start_tunnel()
-    next_public_check = time.time() + 120   # grace: let the hostname propagate before checking
+    URL_FILE.write_text(url + "\n")
+    next_public_check = time.time() + 60
     fails = 0
     while True:
         if not app_up():
@@ -97,30 +101,29 @@ def main():
             except Exception:
                 pass
             start_app()
-        # tunnel process dead -> restart (new URL)
+        # tunnel process dead -> restart (same static URL)
         if tun_proc is None or tun_proc.poll() is not None:
             print("[keepalive] tunnel process exited — restarting", flush=True)
-            url = start_tunnel()
-            next_public_check = time.time() + 120
+            start_tunnel()
+            next_public_check = time.time() + 60
             fails = 0
         else:
             now = time.time()
             if now >= next_public_check:
                 next_public_check = now + 60
-                url = url or tunnel_url()
-                if public_ok(url):
+                if public_ok(PUBLIC_URL):
                     fails = 0
                 else:
                     fails += 1
                     print(f"[keepalive] public URL check failed ({fails}/3)", flush=True)
-                    if fails >= 3:   # only recycle after ~3 min of real downtime
+                    if fails >= 3:
                         print("[keepalive] recycling tunnel", flush=True)
                         try:
                             tun_proc.kill()
                         except Exception:
                             pass
-                        url = start_tunnel()
-                        next_public_check = time.time() + 120
+                        start_tunnel()
+                        next_public_check = time.time() + 60
                         fails = 0
         time.sleep(15)
 
