@@ -314,6 +314,21 @@ def _rung1(inp, trace):
         raise RetryableError("forced failure for demo")
     started = time.time()
     plan = inp["plan"]
+    if os.getenv("OSTEON_FORCE_FAIL") == "guardrail":
+        # SIMULATED out-of-bounds proposal (demo): inject a plate thickness no real proposer would
+        # ever emit, bypassing the LLM, so the PRE-INVOKE guardrail rejects it BEFORE any mesh or
+        # Blender call. The ladder then advances to rung 2 (CMA-ES), which substitutes a valid
+        # implant — proving the guardrail stops bad geometry at the gateway without breaking the run.
+        low, high = THETA_BOUNDS["thickness_mm"]
+        proposed = {**seed_theta(plan), "thickness_mm": 99.0}
+        trace.emit(
+            span="synthesize:guardrail",
+            simulated=True,
+            reason="forced out-of-bounds theta thickness (demo)",
+            rejected={"thickness_mm": 99.0, "bound": [float(low), float(high)]},
+            generate_mesh_called=False,  # pre-invoke guardrail: mesh/Blender is never reached here
+        )
+        theta_bounds_check(proposed)  # raises RejectedOutput BEFORE _make_candidate / generate_mesh
     proposed = _llm_propose_theta(seed_theta(plan), inp.get("report"), trace)
     theta_bounds_check(proposed)  # pre-invoke guardrail: out-of-bounds LLM output -> RejectedOutput
     candidate = _make_candidate(plan, inp["iteration"], clamp_theta(proposed), rung=1)

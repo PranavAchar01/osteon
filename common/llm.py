@@ -8,7 +8,9 @@ defense above this.
 """
 import hashlib
 import json
+import os
 
+import openai
 from openai import OpenAI
 
 from common.settings import settings
@@ -48,9 +50,20 @@ def call_llm(*, stage: str, messages, model: str = DEFAULT_MODEL, **kw):
 
     input_hash = hashlib.sha256(json.dumps(messages, default=str).encode()).hexdigest()
     last_exc = None
+    force_fail = os.environ.get("OSTEON_FORCE_FAIL")
     for i, alias in enumerate(order):
         resolved = _resolve(alias)
+        # SIMULATED, fully reversible failover (demo). When OSTEON_FORCE_FAIL == "gateway" we make
+        # the PRIMARY model fail BEFORE the network call, so the AI Gateway reroutes to the next
+        # model in FALLBACK_CHAIN (which still really runs). No credentials are touched and nothing
+        # is mutated — clearing the env var restores normal routing. The failed attempt is tagged
+        # simulated=True (+ reroute_to) on the trace so the dashboard can prove the failover.
+        simulated = force_fail == "gateway" and alias == DEFAULT_MODEL
         try:
+            if simulated:
+                raise openai.OpenAIError(
+                    f"simulated: {alias} Bedrock credentials revoked (forced gateway failover, demo)"
+                )
             result = client.chat.completions.create(
                 model=resolved,
                 messages=messages,
@@ -61,6 +74,7 @@ def call_llm(*, stage: str, messages, model: str = DEFAULT_MODEL, **kw):
                 trace.emit(
                     span=f"llm:{stage}",
                     model=resolved,
+                    alias=alias,
                     stage=stage,
                     fallback=i > 0,
                     input_hash=input_hash,
@@ -70,6 +84,17 @@ def call_llm(*, stage: str, messages, model: str = DEFAULT_MODEL, **kw):
         except Exception as exc:  # rate limit / outage / bad response -> try the next model
             last_exc = exc
             if trace:
-                trace.emit(span=f"llm:{stage}", model=resolved, fallback=True, error=str(exc)[:160])
+                span = {
+                    "span": f"llm:{stage}",
+                    "model": resolved,
+                    "alias": alias,
+                    "fallback": True,
+                    "error": str(exc)[:160],
+                }
+                if simulated:
+                    span["simulated"] = True
+                    span["reason"] = "forced gateway failover (demo)"
+                    span["reroute_to"] = order[i + 1] if i + 1 < len(order) else alias
+                trace.emit(**span)
             continue
     raise last_exc

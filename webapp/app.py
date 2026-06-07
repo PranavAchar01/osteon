@@ -30,7 +30,7 @@ import trimesh
 
 import split_b_synthesis.engine as b_engine
 from common.contracts import CaseSpec, ImplantCandidate, PlacementPlan
-from common.llm import call_llm
+from common.llm import DEFAULT_MODEL, call_llm
 from common.settings import settings
 from common.trace import LoopTrace
 from split_a_localization.engine import run as localize
@@ -103,7 +103,19 @@ CASES = {
     },
 }
 LOADS = {"Walking": 700, "Stair climb": 1500, "Stumble": 2600}
-FAIL_MODES = {"none", "evaluate", "evaluate_floor"}
+# Failure-injection toggles for the live resilience demo. Every one is a SIMULATED, reversible
+# OSTEON_FORCE_FAIL switch (set while the engines run, cleared in _design's finally) — no real
+# credentials, meshes, or files are ever touched, and every run still ends in a valid result.
+#   gateway        -> common/llm.py forces the primary model to fail -> gateway reroutes to Llama
+#   evaluate       -> Split C rung-1 (sfepy FEA) fails  -> beam-model surrogate (rung 2)
+#   evaluate_floor -> Split C rung-1 + rung-2 fail      -> closed-form analytic floor
+#   guardrail      -> Split B injects an out-of-bounds theta -> pre-invoke guardrail blocks it
+#                     before any mesh/Blender call -> CMA-ES (rung 2) substitutes a valid implant
+FAIL_MODES = {"none", "evaluate", "evaluate_floor", "gateway", "guardrail"}
+
+# Recovery-evidence maps used to translate engine internals into the dashboard's `recovery` object.
+_SOLVER_RUNG = {"full_fea": "fea", "reduced_surrogate": "beam", "analytic_fallback": "floor"}
+_SYN_RUNG_NAME = {1: "llm", 2: "cma-es"}
 
 # Demo patient records (fictional) so the dashboard reads like a clinical workspace.
 PATIENTS = {
@@ -188,6 +200,55 @@ def _read_spans(trace_id: str) -> list[dict]:
                 pass
     out.sort(key=lambda s: s.get("ts", 0))
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Recovery evidence — translate the engines' trace spans + fired rungs into the
+# `recovery` object the dashboard renders as a failover/guardrail/timeout banner.
+# --------------------------------------------------------------------------- #
+def _gateway_recovery(trace_id: str, stage: str) -> dict:
+    """Failure 1 evidence. Inspect the ``llm:<stage>`` spans and report which model actually
+    answered and whether the AI Gateway failed over from the primary (claude) to the fallback
+    (llama). Robust whether or not the fallback's real network call succeeds: a simulated-failover
+    span carries ``reroute_to`` so the rerouted model is reported even with no live gateway."""
+    spans = [s for s in _read_spans(trace_id) if s.get("span") == f"llm:{stage}"]
+    simulated = any(s.get("simulated") for s in spans)
+    answered = [s for s in spans if not s.get("error")]  # a span without 'error' == a real reply
+    if answered:
+        last = answered[-1]
+        return {
+            "failover": bool(last.get("fallback") or simulated),
+            "model_used": last.get("alias") or last.get("model") or DEFAULT_MODEL,
+        }
+    if simulated:
+        sim = next(s for s in spans if s.get("simulated"))
+        return {"failover": True, "model_used": sim.get("reroute_to") or "bedrock/llama-70b"}
+    return {"failover": False, "model_used": DEFAULT_MODEL}
+
+
+def _guardrail_recovery(res: dict) -> dict:
+    """Failure 3 evidence. Read the design trace for the ``synthesize:guardrail`` span proving the
+    out-of-bounds theta was blocked by the pre-invoke guardrail BEFORE any mesh/Blender call, and
+    report the rung that substituted a valid implant (CMA-ES)."""
+    gspan = next(
+        (s for s in _read_spans(res["trace_id"]) if s.get("span") == "synthesize:guardrail"), None
+    )
+    blocked = gspan is not None
+    syn = res["rungs"].get("synthesize")
+    rung = _SYN_RUNG_NAME.get(syn, str(syn))
+    return {
+        "guardrail_blocked": blocked,
+        "rejected": (gspan or {}).get("rejected"),
+        "rung": rung,
+        "substituted_rung": rung,
+        "blender_invoked": not blocked,  # the rejected theta never reached the mesh/Blender tool
+    }
+
+
+def _solver_recovery(report) -> dict:
+    """Failure 2 evidence. Report the Split C rung/solver that actually produced the StressReport
+    (full FEA -> beam surrogate -> closed-form floor)."""
+    return {"rung": _SOLVER_RUNG.get(report.solver_used, "fea"), "solver": report.solver_used}
 
 
 # --------------------------------------------------------------------------- #
@@ -827,13 +888,28 @@ def gen():
         facts = (f"bone=femur; anchors={len(plan.anchor_points)} on cortical surface; cortical "
                  f"thickness {min(th)}-{max(th)} mm (rejected <1.5 mm); PCA frame along shaft; "
                  f"method rung={plan.fallback_rung}; confidence={round(plan.confidence,2)}")
-        bullets = _llm_bullets("Split A localization", "localize", facts, trace) or [
-            f"Placed {len(plan.anchor_points)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
-            "Built a PCA coordinate frame aligned to the bone's long axis.",
-            "Farthest-point-spread the anchors to bracket the fracture.",
-            f"Produced by rung {plan.fallback_rung}, confidence {round(plan.confidence,2)}.",
-        ]
-        return jsonify({"stage": "a", "img": mt(png), "bullets": bullets})
+        # Failure 1: this is the LLM-bearing stage. With fail_mode "gateway" we hold the toggle
+        # across the live call_llm so the primary (claude) fails over to llama on the gateway.
+        gw = fail == "gateway"
+        _prev = os.environ.get("OSTEON_FORCE_FAIL")
+        if gw:
+            os.environ["OSTEON_FORCE_FAIL"] = "gateway"
+        try:
+            bullets = _llm_bullets("Split A localization", "localize", facts, trace) or [
+                f"Placed {len(plan.anchor_points)} anchors on cortical bone (thickness {min(th)}-{max(th)} mm, ≥1.5 mm).",
+                "Built a PCA coordinate frame aligned to the bone's long axis.",
+                "Farthest-point-spread the anchors to bracket the fracture.",
+                f"Produced by rung {plan.fallback_rung}, confidence {round(plan.confidence,2)}.",
+            ]
+        finally:
+            if gw:
+                if _prev is not None:
+                    os.environ["OSTEON_FORCE_FAIL"] = _prev
+                else:
+                    os.environ.pop("OSTEON_FORCE_FAIL", None)
+        return jsonify({"stage": "a", "img": mt(png), "bullets": bullets,
+                        "recovery": _gateway_recovery(trace.trace_id, "localize"),
+                        "trace_id": res["trace_id"]})
 
     if stage == "b":
         posed, alone_stl, ext = _register_plate(plan, case_key)
@@ -855,10 +931,27 @@ def gen():
             "Registered it onto the shaft, seated on the cortical surface over the fracture.",
             "Real CAD geometry preserved — rotation and translation only.",
         ]
-        return jsonify({"stage": "b", "img_alone": mt(alone), "img_femur": mt(infem), "bullets": bullets})
+        # Failure 3: the pre-invoke theta-bounds guardrail fired inside the live pipeline (_design
+        # ran Split B with fail_mode "guardrail"); surface its evidence from the design trace.
+        return jsonify({"stage": "b", "img_alone": mt(alone), "img_femur": mt(infem),
+                        "bullets": bullets, "recovery": _guardrail_recovery(res),
+                        "trace_id": res["trace_id"]})
 
     if stage == "c":
-        r, posed, e = _evaluate_anatomic(case, plan, case_key, trace)
+        # Failure 2: hold the toggle across the live FEA so rung-1 (sfepy) times out -> beam
+        # surrogate (evaluate), or both FE rungs fail -> closed-form floor (evaluate_floor).
+        ev = fail in ("evaluate", "evaluate_floor")
+        _prev = os.environ.get("OSTEON_FORCE_FAIL")
+        if ev:
+            os.environ["OSTEON_FORCE_FAIL"] = fail
+        try:
+            r, posed, e = _evaluate_anatomic(case, plan, case_key, trace)
+        finally:
+            if ev:
+                if _prev is not None:
+                    os.environ["OSTEON_FORCE_FAIL"] = _prev
+                else:
+                    os.environ.pop("OSTEON_FORCE_FAIL", None)
         yld = MATERIALS[CASES[case_key]["material"]]["yield_MPa"]
         out_png = RENDERS / f"live_stress_{case_key}.png"
         try:
@@ -876,6 +969,7 @@ def gen():
             f"Verdict: {'PASS' if r.passed else 'AT RISK — redesign'}.",
         ]
         return jsonify({"stage": "c", "img": mt(out_png), "bullets": bullets,
+                        "recovery": _solver_recovery(r), "trace_id": res["trace_id"],
                         "report": {"peak_mpa": round(r.peak_von_mises_MPa, 1),
                                    "fos": round(r.factor_of_safety, 2), "passed": bool(r.passed),
                                    "solver": r.solver_used, "shielding": round(r.stress_shielding_index, 2),
@@ -954,4 +1048,4 @@ def open_blender():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5001, debug=False, threaded=False)
+    app.run(host="127.0.0.1", port=5001, debug=False, threaded=True)
